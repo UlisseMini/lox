@@ -293,6 +293,118 @@ impl fmt::Display for Error {
     }
 }
 
+#[derive(Debug)]
+pub enum Literal {
+    Number(f64),
+    Bool(bool),
+    Nil,
+}
+
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Literal::*;
+        match self {
+            Number(n) => write!(f, "{}", n),
+            Bool(b) => write!(f, "{}", b),
+            Nil => write!(f, "nil"),
+        }
+    }
+}
+
+type ExprB = Box<Expr>;
+
+#[derive(Debug)]
+#[rustfmt::skip]
+pub enum BinaryOp {
+    Add, Sub, Mul, Div, Eq
+}
+
+impl fmt::Display for BinaryOp {
+    #[rustfmt::skip]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use BinaryOp::*;
+        write!(f, "{}", match self {
+            Add => "+", Sub => "-", Mul => "*", Div => "/", Eq => "=="
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Binary {
+    left: ExprB,
+    right: ExprB,
+    operator: BinaryOp,
+}
+
+impl fmt::Display for Binary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.operator, self.left, self.right)
+    }
+}
+
+#[derive(Debug)]
+#[rustfmt::skip]
+pub enum UnaryOp {
+    Minus, LogicalNot
+}
+
+impl fmt::Display for UnaryOp {
+    #[rustfmt::skip]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use UnaryOp::*;
+        write!(f, "{}", match self {
+            Minus => "-", LogicalNot => "!",
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Unary {
+    right: ExprB,
+    operator: UnaryOp,
+}
+
+impl fmt::Display for Unary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.operator, self.right)
+    }
+}
+
+#[derive(Debug)]
+pub enum Expr {
+    Literal(Literal),
+    Unary(Unary),
+    Binary(Binary),
+    Grouping(ExprB),
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Expr::*;
+
+        match self {
+            Literal(lit) => write!(f, "{}", lit),
+            Unary(un) => write!(f, "({})", un),
+            Binary(bin) => write!(f, "({})", bin),
+            Grouping(expr) => write!(f, "(group {})", expr),
+        }
+    }
+}
+
+pub struct Parser {
+    tokens: Vec<Token>,
+}
+
+impl Parser {
+    fn new(tokens: Vec<Token>) -> Parser {
+        Parser { tokens }
+    }
+
+    fn parse_tokens(&mut self) -> Result<Expr, Error> {
+        Ok(Expr::Literal(Literal::Number(5.)))
+    }
+}
+
 pub struct Lox {}
 
 impl Lox {
@@ -304,10 +416,33 @@ impl Lox {
         let mut scanner = Scanner::new(source.to_string());
 
         scanner.scan_tokens()?;
-        for token in scanner.tokens {
+        for token in &scanner.tokens {
             println!("{:?}", token);
         }
-
+        let tokens = scanner.tokens;
+        let mut parser = Parser::new(tokens);
+        let expr = parser.parse_tokens()?;
+        println!("{}", expr);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expr_pretty_print() {
+        let expr = Expr::Binary(Binary {
+            left: Box::new(Expr::Unary(Unary {
+                operator: UnaryOp::Minus,
+                right: Box::new(Expr::Literal(Literal::Number(123.))),
+            })),
+            operator: BinaryOp::Mul,
+            right: Box::new(Expr::Grouping(Box::new(Expr::Literal(Literal::Number(
+                45.67,
+            ))))),
+        });
+        assert_eq!(format!("{}", expr), "(* (- 123) (group 45.67))");
     }
 }
