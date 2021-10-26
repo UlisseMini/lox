@@ -50,6 +50,7 @@ static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
 pub enum Object {
     Nil,
     Number(f64),
+    String(String),
 }
 
 impl fmt::Display for Object {
@@ -58,6 +59,7 @@ impl fmt::Display for Object {
         match self {
             Nil => write!(f, "nil"),
             Number(n) => write!(f, "{}", n),
+            String(s) => write!(f, "\"{}\"", s),
         }
     }
 }
@@ -199,7 +201,7 @@ impl Scanner {
         // this is a mildly cursed way to ignore the quotes, whatever
 
         self.start += 1; // ignore the first '"'
-        let token = self.emit_token(TokenType::STRING);
+        let token = self.emit_literal(TokenType::STRING, Object::String(self.lexeme()));
 
         self.advance(); // consume the closing '"'
         return Ok(Some(token));
