@@ -51,6 +51,7 @@ pub enum Object {
     Nil,
     Number(f64),
     String(String),
+    Bool(bool),
 }
 
 impl fmt::Display for Object {
@@ -60,6 +61,7 @@ impl fmt::Display for Object {
             Nil => write!(f, "nil"),
             Number(n) => write!(f, "{}", n),
             String(s) => write!(f, "\"{}\"", s),
+            Bool(b) => write!(f, "{}", b),
         }
     }
 }
@@ -153,6 +155,8 @@ impl Scanner {
     }
 
     fn identifier(&mut self) -> Result<Option<Token>, Error> {
+        use TokenType::*;
+
         while Self::is_alphanumeric(self.peek()) {
             self.advance();
         }
@@ -160,9 +164,13 @@ impl Scanner {
         let lexeme = self.lexeme();
         let type_ = match KEYWORDS.get(&lexeme) {
             Some(type_) => *type_,
-            None => TokenType::IDENTIFIER,
+            None => IDENTIFIER,
         };
-        let token = self.emit_token(type_);
+        let token = match type_ {
+            TRUE => self.emit_literal(type_, Object::Bool(true)),
+            FALSE => self.emit_literal(type_, Object::Bool(false)),
+            _ => self.emit_token(type_),
+        };
         Ok(Some(token))
     }
 
