@@ -1,15 +1,16 @@
 use rlox::Lox;
+use std::io::BufRead;
 
 fn main() {
     let mut lox = Lox::new();
 
-    match lox.run("if a != b { 2 + 2 }") {
-        Ok(_) => {
-            std::process::exit(0);
-        }
-        Err(e) => {
+    let stdin = std::io::stdin();
+    eprint!("> ");
+    for line in stdin.lock().lines() {
+        let source = line.unwrap();
+        if let Err(e) = lox.run(&source) {
             eprintln!("Error: {}", e);
-            std::process::exit(65);
-        }
-    };
+        };
+        eprint!("> ");
+    }
 }

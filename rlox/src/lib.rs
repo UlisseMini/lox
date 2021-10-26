@@ -2,7 +2,7 @@ use std::fmt;
 
 #[allow(non_camel_case_types)]
 #[rustfmt::skip]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TokenType {
     // Single character
     LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
@@ -46,13 +46,23 @@ static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "while" =>  TokenType::WHILE,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Object {
     Nil,
     Number(f64),
 }
 
-#[derive(Debug)]
+impl fmt::Display for Object {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Object::*;
+        match self {
+            Nil => write!(f, "nil"),
+            Number(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Token {
     type_: TokenType,
     lexeme: String,
@@ -267,6 +277,7 @@ impl Scanner {
     }
 }
 
+#[derive(Debug)]
 pub struct Error {
     line: usize,
     where_: String,
@@ -293,89 +304,58 @@ impl fmt::Display for Error {
     }
 }
 
-#[derive(Debug)]
-pub enum Literal {
-    Number(f64),
-    Bool(bool),
-    Nil,
-}
-
-impl fmt::Display for Literal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use Literal::*;
-        match self {
-            Number(n) => write!(f, "{}", n),
-            Bool(b) => write!(f, "{}", b),
-            Nil => write!(f, "nil"),
-        }
-    }
-}
-
 type ExprB = Box<Expr>;
-
-#[derive(Debug)]
-#[rustfmt::skip]
-pub enum BinaryOp {
-    Add, Sub, Mul, Div, Eq
-}
-
-impl fmt::Display for BinaryOp {
-    #[rustfmt::skip]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use BinaryOp::*;
-        write!(f, "{}", match self {
-            Add => "+", Sub => "-", Mul => "*", Div => "/", Eq => "=="
-        })
-    }
-}
 
 #[derive(Debug)]
 pub struct Binary {
     left: ExprB,
     right: ExprB,
-    operator: BinaryOp,
+    operator: Token,
 }
 
 impl fmt::Display for Binary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}", self.operator, self.left, self.right)
-    }
-}
-
-#[derive(Debug)]
-#[rustfmt::skip]
-pub enum UnaryOp {
-    Minus, LogicalNot
-}
-
-impl fmt::Display for UnaryOp {
-    #[rustfmt::skip]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use UnaryOp::*;
-        write!(f, "{}", match self {
-            Minus => "-", LogicalNot => "!",
-        })
+        write!(f, "{} {} {}", self.operator.lexeme, self.left, self.right)
     }
 }
 
 #[derive(Debug)]
 pub struct Unary {
     right: ExprB,
-    operator: UnaryOp,
+    operator: Token,
 }
 
 impl fmt::Display for Unary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {}", self.operator, self.right)
+        write!(f, "{} {}", self.operator.lexeme, self.right)
     }
 }
 
 #[derive(Debug)]
 pub enum Expr {
-    Literal(Literal),
+    Literal(Object),
     Unary(Unary),
     Binary(Binary),
     Grouping(ExprB),
+}
+
+impl Expr {
+    fn binary(left: Expr, operator: Token, right: Expr) -> Expr {
+        Expr::Binary(Binary {
+            left: Box::new(left),
+            operator: operator,
+            right: Box::new(right),
+        })
+    }
+    fn unary(operator: Token, right: Expr) -> Expr {
+        Expr::Unary(Unary {
+            operator: operator,
+            right: Box::new(right),
+        })
+    }
+    fn grouping(expr: Expr) -> Expr {
+        Expr::Grouping(Box::new(expr))
+    }
 }
 
 impl fmt::Display for Expr {
@@ -393,15 +373,167 @@ impl fmt::Display for Expr {
 
 pub struct Parser {
     tokens: Vec<Token>,
+    current: usize,
 }
 
+// Parsing is essentially the same as scanning, except every character is now a token.
 impl Parser {
     fn new(tokens: Vec<Token>) -> Parser {
-        Parser { tokens }
+        let current = 0;
+        Parser { tokens, current }
     }
 
     fn parse_tokens(&mut self) -> Result<Expr, Error> {
-        Ok(Expr::Literal(Literal::Number(5.)))
+        self.expression()
+    }
+
+    // This is a literal translation of the BNF style grammer described in
+    // https://craftinginterpreters.com/parsing-expressions.html
+    // In order of increasing precedence
+    /*
+      expression     → equality ;
+      equality       → comparison ( ( "!=" | "==" ) comparison )* ;
+      comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
+      term           → factor ( ( "-" | "+" ) factor )* ;
+      factor         → unary ( ( "/" | "*" ) unary )* ;
+      unary          → ( "!" | "-" ) unary | primary ;
+      primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
+    */
+    // Parser combinators would make this very nice
+
+    fn expression(&mut self) -> Result<Expr, Error> {
+        self.equality()
+    }
+
+    fn equality(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+
+        let mut expr = self.comparison()?;
+        while self.advance_if(&[EQUAL_EQUAL, BANG_EQUAL]) {
+            let operator = self.previous();
+            let right = self.comparison()?;
+            expr = Expr::Binary(Binary {
+                left: Box::new(expr),
+                operator: operator,
+                right: Box::new(right),
+            });
+        }
+        Ok(expr)
+    }
+
+    fn comparison(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+
+        let mut expr = self.term()?;
+        while self.advance_if(&[GREATER, GREATER_EQUAL, LESS, LESS_EQUAL]) {
+            let operator = self.previous();
+            let right = self.term()?;
+            expr = Expr::binary(expr, operator, right);
+        }
+        Ok(expr)
+    }
+
+    fn term(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        let mut expr = self.factor()?;
+        while self.advance_if(&[PLUS, MINUS]) {
+            let operator = self.previous();
+            let right = self.factor()?;
+            expr = Expr::binary(expr, operator, right);
+        }
+        Ok(expr)
+    }
+
+    fn factor(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        let mut expr = self.unary()?;
+        while self.advance_if(&[SLASH, STAR]) {
+            let operator = self.previous();
+            let right = self.unary()?;
+            expr = Expr::binary(expr, operator, right);
+        }
+        Ok(expr)
+    }
+
+    fn unary(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+
+        if self.advance_if(&[BANG, MINUS]) {
+            let operator = self.previous();
+            let right = self.unary()?;
+            Ok(Expr::unary(operator, right))
+        } else {
+            self.primary()
+        }
+    }
+
+    // NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
+    fn primary(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        if self.advance_if(&[NUMBER, STRING, TRUE, FALSE, NIL]) {
+            Ok(Expr::Literal(self.previous().literal))
+        } else if self.advance_if(&[LEFT_PAREN]) {
+            let expr = self.expression()?;
+            self.consume(RIGHT_PAREN)?;
+            Ok(Expr::grouping(expr))
+        } else {
+            let tok = self.current();
+            Err(Error::new(
+                tok.line,
+                "".to_string(),
+                format!("Expected expression, got {:?}", tok.type_),
+            ))
+        }
+    }
+
+    fn current(&self) -> Token {
+        if self.at_end() {
+            return Token {
+                type_: TokenType::EOF,
+                lexeme: "".to_string(),
+                literal: Object::Nil,
+                line: self.previous().line,
+            };
+        }
+
+        self.tokens[self.current].clone()
+    }
+
+    fn previous(&self) -> Token {
+        self.tokens[self.current - 1].clone()
+    }
+
+    fn advance(&mut self) {
+        self.current += 1;
+    }
+
+    fn at_end(&self) -> bool {
+        return self.current >= self.tokens.len();
+    }
+
+    fn advance_if(&mut self, types: &[TokenType]) -> bool {
+        let tok = self.current();
+        for type_ in types {
+            if type_ == &tok.type_ {
+                self.advance();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn consume(&mut self, type_: TokenType) -> Result<(), Error> {
+        let tok = self.current();
+        if tok.type_ == type_ {
+            self.advance();
+            Ok(())
+        } else {
+            Err(Error::new(
+                tok.line,
+                "".to_string(),
+                format!("expected {:?} got {:?}", type_, tok.type_),
+            ))
+        }
     }
 }
 
@@ -416,9 +548,9 @@ impl Lox {
         let mut scanner = Scanner::new(source.to_string());
 
         scanner.scan_tokens()?;
-        for token in &scanner.tokens {
-            println!("{:?}", token);
-        }
+        // for token in &scanner.tokens {
+        //     println!("{:?}", token);
+        // }
         let tokens = scanner.tokens;
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_tokens()?;
@@ -432,17 +564,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_expr_pretty_print() {
+    fn test_pretty_printer() {
         let expr = Expr::Binary(Binary {
             left: Box::new(Expr::Unary(Unary {
-                operator: UnaryOp::Minus,
-                right: Box::new(Expr::Literal(Literal::Number(123.))),
+                operator: Token {
+                    type_: TokenType::MINUS,
+                    lexeme: "-".to_string(),
+                    literal: Object::Nil,
+                    line: 1,
+                },
+                right: Box::new(Expr::Literal(Object::Number(123.))),
             })),
-            operator: BinaryOp::Mul,
-            right: Box::new(Expr::Grouping(Box::new(Expr::Literal(Literal::Number(
+            operator: Token {
+                type_: TokenType::STAR,
+                lexeme: "*".to_string(),
+                literal: Object::Nil,
+                line: 1,
+            },
+            right: Box::new(Expr::Grouping(Box::new(Expr::Literal(Object::Number(
                 45.67,
             ))))),
         });
         assert_eq!(format!("{}", expr), "(* (- 123) (group 45.67))");
+    }
+
+    #[test]
+    fn test_parser() {
+        fn s(source: &str) -> String {
+            let mut scanner = Scanner::new(source.to_string());
+            scanner.scan_tokens().unwrap();
+            let mut parser = Parser::new(scanner.tokens);
+            format!("{}", parser.parse_tokens().unwrap())
+        }
+
+        assert_eq!(s("2 + 3"), "(+ 2 3)");
+        assert_eq!(s("2 + 3*4"), "(+ 2 (* 3 4))");
+        assert_eq!(s("2 + 3 + 4"), "(+ (+ 2 3) 4)");
+        assert_eq!(s("2 >= 3 + 4*2"), "(>= 2 (+ 3 (* 4 2)))");
+        assert_eq!(s("2 >= (3 + 4)*2"), "(>= 2 (* (group (+ 3 4)) 2))");
     }
 }
