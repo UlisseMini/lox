@@ -55,56 +55,97 @@ pub enum Object {
 }
 
 impl Object {
-    fn number(&self) -> Option<f64> {
+    // TODO: Fix this garbage repeating code, either use a macro or restructure code so
+    // that ObjectType is separate from the enum, and thus can be passed as a param.
+    // also this code should have access to the operator token for error handling... changing
+    // the error object after return is such a hack.
+    //
+    // TODO: Another option is to create a 'Function' or 'Operator' trait which has error
+    // handling built in, then implement each operator in that framework. Then we could have
+    // errors like "bad argument Bool(true) as argument 1 to add want number"
+
+    fn number(&self) -> Result<f64, Error> {
         match self {
-            Object::Number(n) => Some(*n),
-            _ => None,
+            Object::Number(n) => Ok(*n),
+
+            // error will be caught in evaluator and the line number will be corrected.
+            _ => Err(Error::new(
+                0,
+                "".to_string(),
+                format!("want number got {:?}", self),
+            )),
         }
     }
 
-    fn bool(&self) -> Option<bool> {
+    fn bool(&self) -> Result<bool, Error> {
         match self {
-            Object::Bool(b) => Some(*b),
-            _ => None,
+            Object::Bool(b) => Ok(*b),
+            _ => Err(Error::new(
+                0,
+                "".to_string(),
+                format!("want bool got {:?}", self),
+            )),
         }
     }
-}
 
-// NOTE: all of these operators panic on invalid types, you must check types before calling them.
-use std::ops::{Add, Div, Mul, Neg, Not};
-
-impl Add for Object {
-    type Output = Self;
-    fn add(self, other: Self) -> Self {
-        Self::Number(self.number().unwrap() + other.number().unwrap())
+    fn string(self) -> Result<String, Error> {
+        match self {
+            Object::String(s) => Ok(s),
+            _ => Err(Error::new(
+                0,
+                "".to_string(),
+                format!("want string got {:?}", self),
+            )),
+        }
     }
-}
 
-impl Mul for Object {
-    type Output = Self;
-    fn mul(self, other: Self) -> Self {
-        Self::Number(self.number().unwrap() * other.number().unwrap())
+    fn add(self, other: Object) -> Result<Object, Error> {
+        use Object::*;
+        match self {
+            String(s) => Ok(Object::String(s + &other.string()?)),
+            Number(n) => Ok(Self::Number(n + other.number()?)),
+            _ => Err(Error::new(
+                0,
+                "".to_string(),
+                format!("want number or string, got {:?}", self),
+            )),
+        }
     }
-}
 
-impl Div for Object {
-    type Output = Self;
-    fn div(self, other: Self) -> Self {
-        Self::Number(self.number().unwrap() / other.number().unwrap())
+    fn sub(self, other: Object) -> Result<Object, Error> {
+        Ok(Self::Number(self.number()? - other.number()?))
     }
-}
 
-impl Neg for Object {
-    type Output = Self;
-    fn neg(self) -> Self {
-        Self::Number(-self.number().unwrap())
+    fn mul(self, other: Self) -> Result<Self, Error> {
+        Ok(Self::Number(self.number()? * other.number()?))
     }
-}
 
-impl Not for Object {
-    type Output = Self;
-    fn not(self) -> Self {
-        Self::Bool(!self.bool().unwrap())
+    fn div(self, other: Self) -> Result<Self, Error> {
+        Ok(Self::Number(self.number()? / other.number()?))
+    }
+
+    fn neg(self) -> Result<Self, Error> {
+        Ok(Self::Number(-self.number()?))
+    }
+
+    fn not(self) -> Result<Self, Error> {
+        Ok(Self::Bool(!self.bool()?))
+    }
+
+    fn less_equal(self, other: Object) -> Result<Self, Error> {
+        Ok(Self::Bool(self.number()? <= other.number()?))
+    }
+
+    fn greater_equal(self, other: Object) -> Result<Self, Error> {
+        Ok(Self::Bool(self.number()? >= other.number()?))
+    }
+
+    fn greater(self, other: Object) -> Result<Self, Error> {
+        Ok(Self::Bool(self.number()? > other.number()?))
+    }
+
+    fn less(self, other: Object) -> Result<Self, Error> {
+        Ok(Self::Bool(self.number()? < other.number()?))
     }
 }
 
@@ -207,7 +248,6 @@ impl Scanner {
             '"' => return self.string(),
 
             _ => {
-                // TODO: make a macro for this
                 return Err(self.error(format!("Invalid character {:?}", c)));
             }
         };
@@ -237,7 +277,6 @@ impl Scanner {
     fn number(&mut self) -> Result<Option<Token>, Error> {
         use std::str::FromStr;
 
-        // TODO: This pattern comes up a lot, abstract with higher order function
         while Self::is_digit(self.peek()) {
             self.advance();
         }
@@ -383,24 +422,6 @@ pub struct Binary {
     operator: Token,
 }
 
-impl Binary {
-    fn eval(&self) -> Result<Object, Error> {
-        use TokenType::*;
-
-        let left = self.left.eval()?;
-        let right = self.right.eval()?;
-
-        // FIXME: Error handling
-        Ok(match self.operator.type_ {
-            PLUS => left + right,
-            STAR => left * right,
-            SLASH => left / right,
-
-            _ => panic!("invalid binary operator '{}'", self.operator.lexeme),
-        })
-    }
-}
-
 impl fmt::Display for Binary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {} {}", self.operator.lexeme, self.left, self.right)
@@ -411,20 +432,6 @@ impl fmt::Display for Binary {
 pub struct Unary {
     right: ExprB,
     operator: Token,
-}
-
-impl Unary {
-    fn eval(&self) -> Result<Object, Error> {
-        use TokenType::*;
-
-        let right = self.right.eval()?;
-        Ok(match self.operator.type_ {
-            MINUS => -right,
-            PLUS => right, // TODO: assert number
-            BANG => !right,
-            _ => panic!("invalid unary operator '{}'", self.operator.lexeme),
-        })
-    }
 }
 
 impl fmt::Display for Unary {
@@ -442,16 +449,6 @@ pub enum Expr {
 }
 
 impl Expr {
-    fn eval(&self) -> Result<Object, Error> {
-        use Expr::*;
-        Ok(match self {
-            Literal(t) => t.literal.clone(),
-            Unary(u) => u.eval()?,
-            Binary(b) => b.eval()?,
-            Grouping(g) => g.eval()?,
-        })
-    }
-
     fn binary(left: Expr, operator: Token, right: Expr) -> Expr {
         Expr::Binary(Binary {
             left: Box::new(left),
@@ -496,13 +493,19 @@ impl fmt::Display for Expr {
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    line: usize,
 }
 
 // Parsing is essentially the same as scanning, except every character is now a token.
 impl Parser {
     fn new(tokens: Vec<Token>) -> Parser {
         let current = 0;
-        Parser { tokens, current }
+        let line = 1;
+        Parser {
+            tokens,
+            current,
+            line,
+        }
     }
 
     fn parse_tokens(&mut self) -> Result<Expr, Error> {
@@ -604,13 +607,13 @@ impl Parser {
         }
     }
 
-    fn current(&self) -> Token {
+    fn current(&mut self) -> Token {
         if self.at_end() {
             return Token {
                 type_: TokenType::EOF,
                 lexeme: "".to_string(),
                 literal: Object::Nil,
-                line: self.previous().line,
+                line: self.line,
             };
         }
 
@@ -622,6 +625,7 @@ impl Parser {
     }
 
     fn advance(&mut self) {
+        self.line = self.tokens[self.current].line;
         self.current += 1;
     }
 
@@ -655,14 +659,81 @@ impl Parser {
     }
 }
 
-pub struct Lox {}
+struct Evaluator();
+
+impl Evaluator {
+    fn new() -> Evaluator {
+        Evaluator()
+    }
+
+    fn eval_expr(&self, expr: Expr) -> Result<Object, Error> {
+        use Expr::*;
+
+        Ok(match expr {
+            Literal(t) => t.literal.clone(),
+            Unary(u) => self.eval_unary(u)?,
+            Binary(b) => self.eval_binary(b)?,
+            Grouping(g) => self.eval_expr(*g)?,
+        })
+    }
+
+    fn eval_binary(&self, b: Binary) -> Result<Object, Error> {
+        use TokenType::*;
+
+        let left = self.eval_expr(*b.left)?;
+        let right = self.eval_expr(*b.right)?;
+
+        let res = match b.operator.type_ {
+            PLUS => left.add(right),
+            STAR => left.mul(right),
+            SLASH => left.div(right),
+            MINUS => left.sub(right),
+            EQUAL_EQUAL => Ok(Object::Bool(left == right)),
+            BANG_EQUAL => Ok(Object::Bool(left != right)),
+            LESS_EQUAL => left.less_equal(right),
+            GREATER_EQUAL => left.greater_equal(right),
+            GREATER => left.greater(right),
+            LESS => left.less(right),
+
+            _ => panic!("invalid binary operator '{}'", b.operator.lexeme),
+        };
+
+        self.fix_res(b.operator, res)
+    }
+
+    fn eval_unary(&self, u: Unary) -> Result<Object, Error> {
+        use TokenType::*;
+
+        let right = self.eval_expr(*u.right)?;
+        let res = match u.operator.type_ {
+            MINUS => right.neg(),
+            BANG => right.not(),
+            // this is a compiler bug, so we panic
+            _ => panic!("invalid unary operator '{}'", u.operator.lexeme),
+        };
+
+        self.fix_res(u.operator, res)
+    }
+
+    fn fix_res(&self, op: Token, res: Result<Object, Error>) -> Result<Object, Error> {
+        match res {
+            Ok(obj) => Ok(obj),
+            Err(mut err) => {
+                err.line = op.line;
+                Err(err)
+            }
+        }
+    }
+}
+
+pub struct Lox();
 
 impl Lox {
     pub fn new() -> Lox {
         Lox {}
     }
 
-    pub fn run(&mut self, source: &str) -> Result<(), Error> {
+    pub fn run(&mut self, source: &str) -> Result<Object, Error> {
         let mut scanner = Scanner::new(source.to_string());
 
         scanner.scan_tokens()?;
@@ -672,10 +743,14 @@ impl Lox {
         let tokens = scanner.tokens;
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_tokens()?;
-        println!("{}", expr);
-        let result = expr.eval().unwrap();
-        println!("=> {}", result);
-        Ok(())
+        eprintln!("{}", expr);
+        let evaluator = Evaluator::new();
+        let result = evaluator.eval_expr(expr)?;
+        // rlox is script friendly, stdout is only "real" output.
+        eprint!("=> ");
+        println!("{}", result);
+
+        Ok(result)
     }
 }
 
@@ -702,13 +777,7 @@ mod tests {
     #[test]
     fn test_evaluator() {
         fn e(source: &str) -> Object {
-            // TODO: fix this garbage (put in lox struct)
-            let mut scanner = Scanner::new(source.to_string());
-            scanner.scan_tokens().unwrap();
-            let mut parser = Parser::new(scanner.tokens);
-            let expr = parser.parse_tokens().unwrap();
-            let mut l = Lox::new();
-            expr.eval().unwrap()
+            Lox::new().run(source).unwrap()
         }
 
         assert_eq!(e("2"), Object::Number(2.));
@@ -717,6 +786,13 @@ mod tests {
         assert_eq!(e("2 + 2"), Object::Number(4.));
         assert_eq!(e("(2 + 3) * 4"), Object::Number(20.));
         assert_eq!(e("(2 + 6) / 4"), Object::Number(2.));
-        // assert_eq!(e("(2 + 6) == 8"), Object::Bool(true));
+        assert_eq!(e("(2 + 6) == 8"), Object::Bool(true));
+        assert_eq!(e("!((2 + 6) == 8)"), Object::Bool(false));
+        assert_eq!(e("\"foo\" + \"bar\""), Object::String("foobar".to_string()));
+        assert_eq!(e("3 < 5"), Object::Bool(true));
+        assert_eq!(e("3 >= 3"), Object::Bool(true));
+        assert_eq!(e("3 > 3"), Object::Bool(false));
+        assert_eq!(e("3 != 3"), Object::Bool(false));
+        assert_eq!(e("(3 + 2) == 5"), Object::Bool(true));
     }
 }

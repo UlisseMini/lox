@@ -9,7 +9,7 @@ fn main() {
     for line in stdin.lock().lines() {
         let source = line.unwrap();
         if let Err(e) = lox.run(&source) {
-            eprintln!("Error: {}", e);
+            eprintln!("{}", e);
         };
         eprint!("> ");
     }
