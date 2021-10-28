@@ -46,12 +46,66 @@ static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "while" =>  TokenType::WHILE,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Object {
     Nil,
     Number(f64),
     String(String),
     Bool(bool),
+}
+
+impl Object {
+    fn number(&self) -> Option<f64> {
+        match self {
+            Object::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn bool(&self) -> Option<bool> {
+        match self {
+            Object::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+// NOTE: all of these operators panic on invalid types, you must check types before calling them.
+use std::ops::{Add, Div, Mul, Neg, Not};
+
+impl Add for Object {
+    type Output = Self;
+    fn add(self, other: Self) -> Self {
+        Self::Number(self.number().unwrap() + other.number().unwrap())
+    }
+}
+
+impl Mul for Object {
+    type Output = Self;
+    fn mul(self, other: Self) -> Self {
+        Self::Number(self.number().unwrap() * other.number().unwrap())
+    }
+}
+
+impl Div for Object {
+    type Output = Self;
+    fn div(self, other: Self) -> Self {
+        Self::Number(self.number().unwrap() / other.number().unwrap())
+    }
+}
+
+impl Neg for Object {
+    type Output = Self;
+    fn neg(self) -> Self {
+        Self::Number(-self.number().unwrap())
+    }
+}
+
+impl Not for Object {
+    type Output = Self;
+    fn not(self) -> Self {
+        Self::Bool(!self.bool().unwrap())
+    }
 }
 
 impl fmt::Display for Object {
@@ -72,6 +126,12 @@ pub struct Token {
     lexeme: String,
     literal: Object,
     line: usize,
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.literal)
+    }
 }
 
 pub struct Scanner {
@@ -323,6 +383,24 @@ pub struct Binary {
     operator: Token,
 }
 
+impl Binary {
+    fn eval(&self) -> Result<Object, Error> {
+        use TokenType::*;
+
+        let left = self.left.eval()?;
+        let right = self.right.eval()?;
+
+        // FIXME: Error handling
+        Ok(match self.operator.type_ {
+            PLUS => left + right,
+            STAR => left * right,
+            SLASH => left / right,
+
+            _ => panic!("invalid binary operator '{}'", self.operator.lexeme),
+        })
+    }
+}
+
 impl fmt::Display for Binary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {} {}", self.operator.lexeme, self.left, self.right)
@@ -335,6 +413,20 @@ pub struct Unary {
     operator: Token,
 }
 
+impl Unary {
+    fn eval(&self) -> Result<Object, Error> {
+        use TokenType::*;
+
+        let right = self.right.eval()?;
+        Ok(match self.operator.type_ {
+            MINUS => -right,
+            PLUS => right, // TODO: assert number
+            BANG => !right,
+            _ => panic!("invalid unary operator '{}'", self.operator.lexeme),
+        })
+    }
+}
+
 impl fmt::Display for Unary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.operator.lexeme, self.right)
@@ -343,13 +435,23 @@ impl fmt::Display for Unary {
 
 #[derive(Debug)]
 pub enum Expr {
-    Literal(Object),
+    Literal(Token),
     Unary(Unary),
     Binary(Binary),
     Grouping(ExprB),
 }
 
 impl Expr {
+    fn eval(&self) -> Result<Object, Error> {
+        use Expr::*;
+        Ok(match self {
+            Literal(t) => t.literal.clone(),
+            Unary(u) => u.eval()?,
+            Binary(b) => b.eval()?,
+            Grouping(g) => g.eval()?,
+        })
+    }
+
     fn binary(left: Expr, operator: Token, right: Expr) -> Expr {
         Expr::Binary(Binary {
             left: Box::new(left),
@@ -357,14 +459,24 @@ impl Expr {
             right: Box::new(right),
         })
     }
+
     fn unary(operator: Token, right: Expr) -> Expr {
         Expr::Unary(Unary {
             operator: operator,
             right: Box::new(right),
         })
     }
+
     fn grouping(expr: Expr) -> Expr {
         Expr::Grouping(Box::new(expr))
+    }
+
+    fn literal(tok: Token) -> Expr {
+        use TokenType::*;
+        match tok.type_ {
+            NUMBER | STRING | TRUE | FALSE | NIL => Expr::Literal(tok),
+            _ => panic!("{:?} is not a literal", tok),
+        }
     }
 }
 
@@ -422,11 +534,7 @@ impl Parser {
         while self.advance_if(&[EQUAL_EQUAL, BANG_EQUAL]) {
             let operator = self.previous();
             let right = self.comparison()?;
-            expr = Expr::Binary(Binary {
-                left: Box::new(expr),
-                operator: operator,
-                right: Box::new(right),
-            });
+            expr = Expr::binary(expr, operator, right);
         }
         Ok(expr)
     }
@@ -481,7 +589,7 @@ impl Parser {
     fn primary(&mut self) -> Result<Expr, Error> {
         use TokenType::*;
         if self.advance_if(&[NUMBER, STRING, TRUE, FALSE, NIL]) {
-            Ok(Expr::Literal(self.previous().literal))
+            Ok(Expr::literal(self.previous()))
         } else if self.advance_if(&[LEFT_PAREN]) {
             let expr = self.expression()?;
             self.consume(RIGHT_PAREN)?;
@@ -565,6 +673,8 @@ impl Lox {
         let mut parser = Parser::new(tokens);
         let expr = parser.parse_tokens()?;
         println!("{}", expr);
+        let result = expr.eval().unwrap();
+        println!("=> {}", result);
         Ok(())
     }
 }
@@ -572,31 +682,6 @@ impl Lox {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_pretty_printer() {
-        let expr = Expr::Binary(Binary {
-            left: Box::new(Expr::Unary(Unary {
-                operator: Token {
-                    type_: TokenType::MINUS,
-                    lexeme: "-".to_string(),
-                    literal: Object::Nil,
-                    line: 1,
-                },
-                right: Box::new(Expr::Literal(Object::Number(123.))),
-            })),
-            operator: Token {
-                type_: TokenType::STAR,
-                lexeme: "*".to_string(),
-                literal: Object::Nil,
-                line: 1,
-            },
-            right: Box::new(Expr::Grouping(Box::new(Expr::Literal(Object::Number(
-                45.67,
-            ))))),
-        });
-        assert_eq!(format!("{}", expr), "(* (- 123) (group 45.67))");
-    }
 
     #[test]
     fn test_parser() {
@@ -612,5 +697,26 @@ mod tests {
         assert_eq!(s("2 + 3 + 4"), "(+ (+ 2 3) 4)");
         assert_eq!(s("2 >= 3 + 4*2"), "(>= 2 (+ 3 (* 4 2)))");
         assert_eq!(s("2 >= (3 + 4)*2"), "(>= 2 (* (group (+ 3 4)) 2))");
+    }
+
+    #[test]
+    fn test_evaluator() {
+        fn e(source: &str) -> Object {
+            // TODO: fix this garbage (put in lox struct)
+            let mut scanner = Scanner::new(source.to_string());
+            scanner.scan_tokens().unwrap();
+            let mut parser = Parser::new(scanner.tokens);
+            let expr = parser.parse_tokens().unwrap();
+            let mut l = Lox::new();
+            expr.eval().unwrap()
+        }
+
+        assert_eq!(e("2"), Object::Number(2.));
+        assert_eq!(e("-2"), Object::Number(-2.));
+        assert_eq!(e("!false"), Object::Bool(true));
+        assert_eq!(e("2 + 2"), Object::Number(4.));
+        assert_eq!(e("(2 + 3) * 4"), Object::Number(20.));
+        assert_eq!(e("(2 + 6) / 4"), Object::Number(2.));
+        // assert_eq!(e("(2 + 6) == 8"), Object::Bool(true));
     }
 }
