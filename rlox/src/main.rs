@@ -2,7 +2,7 @@ use rlox::Lox;
 use std::io::BufRead;
 
 fn main() {
-    let mut lox = Lox::new();
+    let lox = Lox::new();
 
     let stdin = std::io::stdin();
     eprint!("> ");

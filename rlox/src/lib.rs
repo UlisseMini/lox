@@ -68,7 +68,7 @@ impl Object {
         match self {
             Object::Number(n) => Ok(*n),
 
-            // error will be caught in evaluator and the line number will be corrected.
+            // error will be caught in Interpreter and the line number will be corrected.
             _ => Err(Error::new(
                 0,
                 "".to_string(),
@@ -490,6 +490,35 @@ impl fmt::Display for Expr {
     }
 }
 
+#[derive(Debug)]
+pub enum Statement {
+    ExprStmt(Expr),
+    PrintStmt(Expr),
+}
+
+impl fmt::Display for Statement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Statement::ExprStmt(expr) => write!(f, "{}", expr),
+            Statement::PrintStmt(operand) => write!(f, "(print {})", operand),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct AST {
+    statements: Vec<Statement>,
+}
+
+impl fmt::Display for AST {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for statement in &self.statements {
+            write!(f, "{}\n", statement)?;
+        }
+        Ok(())
+    }
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
@@ -508,8 +537,31 @@ impl Parser {
         }
     }
 
-    fn parse_tokens(&mut self) -> Result<Expr, Error> {
-        self.expression()
+    fn parse_tokens(&mut self) -> Result<AST, Error> {
+        self.parse_program()
+    }
+
+    fn parse_program(&mut self) -> Result<AST, Error> {
+        let mut statements = Vec::new();
+        while !self.at_end() {
+            statements.push(self.statement()?);
+        }
+
+        Ok(AST { statements })
+    }
+
+    fn statement(&mut self) -> Result<Statement, Error> {
+        use TokenType::*;
+        if self.advance_if(&[PRINT]) {
+            let operand = self.expression()?;
+            self.consume(SEMICOLON)?;
+
+            Ok(Statement::PrintStmt(operand))
+        } else {
+            let expr = self.expression()?;
+            self.consume(SEMICOLON)?;
+            Ok(Statement::ExprStmt(expr))
+        }
     }
 
     // This is a literal translation of the BNF style grammer described in
@@ -659,11 +711,33 @@ impl Parser {
     }
 }
 
-struct Evaluator();
+struct Interpreter();
 
-impl Evaluator {
-    fn new() -> Evaluator {
-        Evaluator()
+impl Interpreter {
+    fn new() -> Interpreter {
+        Interpreter()
+    }
+
+    fn interpret(&self, ast: AST) -> Result<Object, Error> {
+        let mut last = Object::Nil;
+        for statement in ast.statements {
+            last = self.interpret_statement(statement)?;
+        }
+        Ok(last)
+    }
+
+    fn interpret_statement(&self, statement: Statement) -> Result<Object, Error> {
+        match statement {
+            Statement::ExprStmt(expr) => self.eval_expr(expr),
+            Statement::PrintStmt(operand) => self.print_statement(operand),
+        }
+    }
+
+    fn print_statement(&self, operand: Expr) -> Result<Object, Error> {
+        let obj = self.eval_expr(operand)?;
+        println!("{}", obj);
+
+        Ok(Object::Nil)
     }
 
     fn eval_expr(&self, expr: Expr) -> Result<Object, Error> {
@@ -733,24 +807,43 @@ impl Lox {
         Lox {}
     }
 
-    pub fn run(&mut self, source: &str) -> Result<Object, Error> {
-        let mut scanner = Scanner::new(source.to_string());
-
-        scanner.scan_tokens()?;
-        // for token in &scanner.tokens {
-        //     println!("{:?}", token);
-        // }
-        let tokens = scanner.tokens;
-        let mut parser = Parser::new(tokens);
-        let expr = parser.parse_tokens()?;
-        eprintln!("{}", expr);
-        let evaluator = Evaluator::new();
-        let result = evaluator.eval_expr(expr)?;
+    pub fn run<S: Into<String>>(&self, source: S) -> Result<Object, Error> {
+        let tokens = self.scan(source)?;
+        let ast = self.parse(tokens)?;
+        eprintln!("{}", ast);
+        let result = self.interpret(ast)?;
         // rlox is script friendly, stdout is only "real" output.
         eprint!("=> ");
         println!("{}", result);
 
         Ok(result)
+    }
+
+    pub fn scan<S: Into<String>>(&self, source: S) -> Result<Vec<Token>, Error> {
+        let mut scanner = Scanner::new(source.into());
+        scanner.scan_tokens()?;
+        Ok(scanner.tokens)
+    }
+
+    pub fn parse(&self, tokens: Vec<Token>) -> Result<AST, Error> {
+        let mut parser = Parser::new(tokens);
+        let ast = parser.parse_tokens()?;
+        Ok(ast)
+    }
+
+    pub fn interpret(&self, ast: AST) -> Result<Object, Error> {
+        let interpreter = Interpreter::new();
+        interpreter.interpret(ast)
+    }
+
+    // Parse and evaluate a single expression
+    pub fn eval(&self, source: &str) -> Result<Object, Error> {
+        let mut s = source.to_string();
+        s.push(';');
+        let tokens = self.scan(s)?;
+        let ast = self.parse(tokens)?;
+        assert!(ast.statements.len() == 1);
+        self.interpret(ast)
     }
 }
 
@@ -759,25 +852,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parser() {
+    fn test_parse_expr() {
         fn s(source: &str) -> String {
-            let mut scanner = Scanner::new(source.to_string());
-            scanner.scan_tokens().unwrap();
-            let mut parser = Parser::new(scanner.tokens);
-            format!("{}", parser.parse_tokens().unwrap())
+            let lox = Lox::new();
+            let tokens = lox.scan(source).unwrap();
+            let ast = lox.parse(tokens).unwrap();
+            format!("{}", ast).trim_end().to_string()
         }
 
-        assert_eq!(s("2 + 3"), "(+ 2 3)");
-        assert_eq!(s("2 + 3*4"), "(+ 2 (* 3 4))");
-        assert_eq!(s("2 + 3 + 4"), "(+ (+ 2 3) 4)");
-        assert_eq!(s("2 >= 3 + 4*2"), "(>= 2 (+ 3 (* 4 2)))");
-        assert_eq!(s("2 >= (3 + 4)*2"), "(>= 2 (* (group (+ 3 4)) 2))");
+        assert_eq!(s("2 + 3;"), "(+ 2 3)");
+        assert_eq!(s("2 + 3*4;"), "(+ 2 (* 3 4))");
+        assert_eq!(s("2 + 3 + 4;"), "(+ (+ 2 3) 4)");
+        assert_eq!(s("2 >= 3 + 4*2;"), "(>= 2 (+ 3 (* 4 2)))");
+        assert_eq!(s("2 >= (3 + 4)*2;"), "(>= 2 (* (group (+ 3 4)) 2))");
+        assert_eq!(s("print 3 >= 2;"), "(print (>= 3 2))");
+        assert_eq!(
+            s("print 3 >= 2; print 5+3;"),
+            "(print (>= 3 2))\n(print (+ 5 3))"
+        );
     }
 
     #[test]
-    fn test_evaluator() {
+    fn test_interpreter_eval() {
         fn e(source: &str) -> Object {
-            Lox::new().run(source).unwrap()
+            Lox::new().eval(source).unwrap()
         }
 
         assert_eq!(e("2"), Object::Number(2.));
