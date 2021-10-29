@@ -185,17 +185,24 @@ pub struct Scanner {
 }
 
 impl Scanner {
-    fn new(source: String) -> Scanner {
+    fn new() -> Scanner {
         Scanner {
             start: 0,
             current: 0,
             line: 1,
-            chars: source.chars().collect(),
+            chars: Vec::new(),
             tokens: Vec::new(),
         }
     }
 
-    fn scan_tokens(&mut self) -> Result<(), Error> {
+    fn add_chars(&mut self, source: String) {
+        let mut v: Vec<char> = source.chars().collect();
+        self.chars.append(&mut v);
+    }
+
+    fn scan_tokens(&mut self, source: String) -> Result<(), Error> {
+        self.add_chars(source);
+
         while !self.at_end() {
             if let Some(token) = self.scan_token()? {
                 self.tokens.push(token);
@@ -446,6 +453,7 @@ pub enum Expr {
     Unary(Unary),
     Binary(Binary),
     Grouping(ExprB),
+    Identifier(Identifier),
 }
 
 impl Expr {
@@ -486,6 +494,7 @@ impl fmt::Display for Expr {
             Unary(un) => write!(f, "({})", un),
             Binary(bin) => write!(f, "({})", bin),
             Grouping(expr) => write!(f, "(group {})", expr),
+            Identifier(ident) => write!(f, "{}", ident),
         }
     }
 }
@@ -506,13 +515,36 @@ impl fmt::Display for Statement {
 }
 
 #[derive(Debug)]
+pub struct Identifier(Token);
+impl fmt::Display for Identifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.lexeme)
+    }
+}
+
+#[derive(Debug)]
+pub enum Declaration {
+    VarDecl(Identifier, Expr),
+    Statement(Statement),
+}
+
+impl fmt::Display for Declaration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Declaration::VarDecl(ident, expr) => write!(f, "(var {} {})", ident, expr),
+            Declaration::Statement(stmt) => write!(f, "{}", stmt),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct AST {
-    statements: Vec<Statement>,
+    declarations: Vec<Declaration>,
 }
 
 impl fmt::Display for AST {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for statement in &self.statements {
+        for statement in &self.declarations {
             write!(f, "{}\n", statement)?;
         }
         Ok(())
@@ -527,9 +559,10 @@ pub struct Parser {
 
 // Parsing is essentially the same as scanning, except every character is now a token.
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Parser {
+    fn new() -> Parser {
         let current = 0;
         let line = 1;
+        let tokens = Vec::new();
         Parser {
             tokens,
             current,
@@ -537,17 +570,32 @@ impl Parser {
         }
     }
 
-    fn parse_tokens(&mut self) -> Result<AST, Error> {
+    fn parse_tokens(&mut self, mut tokens: Vec<Token>) -> Result<AST, Error> {
+        self.tokens.append(&mut tokens);
         self.parse_program()
     }
 
     fn parse_program(&mut self) -> Result<AST, Error> {
-        let mut statements = Vec::new();
+        let mut declarations = Vec::new();
         while !self.at_end() {
-            statements.push(self.statement()?);
+            declarations.push(self.declaration()?);
         }
 
-        Ok(AST { statements })
+        Ok(AST { declarations })
+    }
+
+    fn declaration(&mut self) -> Result<Declaration, Error> {
+        use TokenType::*;
+        if self.advance_if(&[VAR]) {
+            self.consume(IDENTIFIER)?;
+            let ident = self.previous();
+            self.consume(EQUAL)?;
+            let expr = self.expression()?;
+            self.consume(SEMICOLON)?;
+            Ok(Declaration::VarDecl(Identifier(ident), expr))
+        } else {
+            Ok(Declaration::Statement(self.statement()?))
+        }
     }
 
     fn statement(&mut self) -> Result<Statement, Error> {
@@ -643,12 +691,16 @@ impl Parser {
     // NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
     fn primary(&mut self) -> Result<Expr, Error> {
         use TokenType::*;
+        // TODO: Rewrite with match
+
         if self.advance_if(&[NUMBER, STRING, TRUE, FALSE, NIL]) {
             Ok(Expr::literal(self.previous()))
         } else if self.advance_if(&[LEFT_PAREN]) {
             let expr = self.expression()?;
             self.consume(RIGHT_PAREN)?;
             Ok(Expr::grouping(expr))
+        } else if self.advance_if(&[IDENTIFIER]) {
+            Ok(Expr::Identifier(Identifier(self.previous())))
         } else {
             let tok = self.current();
             Err(Error::new(
@@ -711,19 +763,58 @@ impl Parser {
     }
 }
 
-struct Interpreter();
+use std::collections::HashMap;
+
+#[derive(Debug)]
+struct Environment {
+    values: HashMap<String, Object>,
+}
+
+impl Environment {
+    fn new() -> Environment {
+        let values = HashMap::new();
+        Environment { values }
+    }
+
+    fn define(&mut self, key: String, value: Object) {
+        // var a = 1; var a = 2; is fine, the second declaration shadows the first.
+        self.values.insert(key, value);
+    }
+
+    fn get(&self, key: &str) -> Option<&Object> {
+        self.values.get(key)
+    }
+}
+
+struct Interpreter {
+    env: Environment,
+}
 
 impl Interpreter {
     fn new() -> Interpreter {
-        Interpreter()
+        Interpreter {
+            env: Environment::new(),
+        }
     }
 
-    fn interpret(&self, ast: AST) -> Result<Object, Error> {
+    fn interpret(&mut self, ast: AST) -> Result<Object, Error> {
         let mut last = Object::Nil;
-        for statement in ast.statements {
-            last = self.interpret_statement(statement)?;
+        for decl in ast.declarations {
+            last = self.interpret_declaration(decl)?;
         }
         Ok(last)
+    }
+
+    fn interpret_declaration(&mut self, decl: Declaration) -> Result<Object, Error> {
+        match decl {
+            Declaration::Statement(stmt) => self.interpret_statement(stmt),
+            Declaration::VarDecl(ident, expr) => {
+                let name = ident.0.lexeme;
+                let value = self.eval_expr(expr)?;
+                self.env.define(name, value);
+                Ok(Object::Nil)
+            }
+        }
     }
 
     fn interpret_statement(&self, statement: Statement) -> Result<Object, Error> {
@@ -748,6 +839,7 @@ impl Interpreter {
             Unary(u) => self.eval_unary(u)?,
             Binary(b) => self.eval_binary(b)?,
             Grouping(g) => self.eval_expr(*g)?,
+            Identifier(i) => self.eval_identifier(i)?,
         })
     }
 
@@ -789,6 +881,21 @@ impl Interpreter {
         self.fix_res(u.operator, res)
     }
 
+    fn eval_identifier(&self, ident: Identifier) -> Result<Object, Error> {
+        self.getenv(ident.0)
+    }
+
+    fn getenv(&self, ident: Token) -> Result<Object, Error> {
+        match self.env.get(&ident.lexeme) {
+            Some(v) => Ok(v.clone()),
+            None => Err(Error::new(
+                ident.line,
+                "".to_string(),
+                format!("Undefined variable '{}'", ident.lexeme),
+            )),
+        }
+    }
+
     fn fix_res(&self, op: Token, res: Result<Object, Error>) -> Result<Object, Error> {
         match res {
             Ok(obj) => Ok(obj),
@@ -800,15 +907,27 @@ impl Interpreter {
     }
 }
 
-pub struct Lox();
+pub struct Lox {
+    scanner: Scanner,
+    parser: Parser,
+    interpreter: Interpreter,
+}
 
 impl Lox {
     pub fn new() -> Lox {
-        Lox {}
+        Lox {
+            scanner: Scanner::new(),
+            parser: Parser::new(),
+            interpreter: Interpreter::new(),
+        }
     }
 
-    pub fn run<S: Into<String>>(&self, source: S) -> Result<Object, Error> {
-        let tokens = self.scan(source)?;
+    pub fn run<S: Into<String>>(&mut self, source: S) -> Result<Object, Error> {
+        // FIXME: Errors cause the interpreter to go into zombie mode since it
+        // FIXME: Stop running the entire program twice for every call to run(),
+        //        run should just execute some more code on an existing program.
+
+        let tokens = self.scan(source)?.clone();
         let ast = self.parse(tokens)?;
         eprintln!("{}", ast);
         let result = self.interpret(ast)?;
@@ -819,30 +938,26 @@ impl Lox {
         Ok(result)
     }
 
-    pub fn scan<S: Into<String>>(&self, source: S) -> Result<Vec<Token>, Error> {
-        let mut scanner = Scanner::new(source.into());
-        scanner.scan_tokens()?;
-        Ok(scanner.tokens)
+    pub fn scan<S: Into<String>>(&mut self, source: S) -> Result<&Vec<Token>, Error> {
+        self.scanner.scan_tokens(source.into())?;
+        Ok(&self.scanner.tokens)
     }
 
-    pub fn parse(&self, tokens: Vec<Token>) -> Result<AST, Error> {
-        let mut parser = Parser::new(tokens);
-        let ast = parser.parse_tokens()?;
-        Ok(ast)
+    pub fn parse(&mut self, tokens: Vec<Token>) -> Result<AST, Error> {
+        self.parser.parse_tokens(tokens)
     }
 
-    pub fn interpret(&self, ast: AST) -> Result<Object, Error> {
-        let interpreter = Interpreter::new();
-        interpreter.interpret(ast)
+    pub fn interpret(&mut self, ast: AST) -> Result<Object, Error> {
+        self.interpreter.interpret(ast)
     }
 
     // Parse and evaluate a single expression
-    pub fn eval(&self, source: &str) -> Result<Object, Error> {
+    pub fn eval(&mut self, source: &str) -> Result<Object, Error> {
         let mut s = source.to_string();
         s.push(';');
-        let tokens = self.scan(s)?;
+        let tokens = self.scan(s)?.clone();
         let ast = self.parse(tokens)?;
-        assert!(ast.statements.len() == 1);
+        assert!(ast.declarations.len() == 1);
         self.interpret(ast)
     }
 }
@@ -854,8 +969,8 @@ mod tests {
     #[test]
     fn test_parse_expr() {
         fn s(source: &str) -> String {
-            let lox = Lox::new();
-            let tokens = lox.scan(source).unwrap();
+            let mut lox = Lox::new();
+            let tokens = lox.scan(source).unwrap().clone();
             let ast = lox.parse(tokens).unwrap();
             format!("{}", ast).trim_end().to_string()
         }
@@ -892,5 +1007,19 @@ mod tests {
         assert_eq!(e("3 > 3"), Object::Bool(false));
         assert_eq!(e("3 != 3"), Object::Bool(false));
         assert_eq!(e("(3 + 2) == 5"), Object::Bool(true));
+    }
+
+    #[test]
+    fn test_interpreter() {
+        fn r(source: &str) -> Object {
+            let mut lox = Lox::new();
+            lox.run(source).unwrap()
+        }
+
+        assert_eq!(r("var x = 5; var y = 3; x + y;"), Object::Number(8.));
+        assert_eq!(
+            r("var x = \"foo\"; var y = \"bar\"; x + y;"),
+            Object::String("foobar".to_string())
+        );
     }
 }
