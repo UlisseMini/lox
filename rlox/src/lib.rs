@@ -449,7 +449,7 @@ impl fmt::Display for Unary {
 
 #[derive(Debug)]
 pub enum Expr {
-    Literal(Token),
+    Literal(Object),
     Unary(Unary),
     Binary(Binary),
     Grouping(ExprB),
@@ -479,7 +479,7 @@ impl Expr {
     fn literal(tok: Token) -> Expr {
         use TokenType::*;
         match tok.type_ {
-            NUMBER | STRING | TRUE | FALSE | NIL => Expr::Literal(tok),
+            NUMBER | STRING | TRUE | FALSE | NIL => Expr::Literal(tok.literal),
             _ => panic!("{:?} is not a literal", tok),
         }
     }
@@ -587,10 +587,15 @@ impl Parser {
     fn declaration(&mut self) -> Result<Declaration, Error> {
         use TokenType::*;
         if self.advance_if(&[VAR]) {
+            // FIXME: This should allow var x; <=> var x = nil;
             self.consume(IDENTIFIER)?;
             let ident = self.previous();
-            self.consume(EQUAL)?;
-            let expr = self.expression()?;
+            let expr = if self.advance_if(&[EQUAL]) {
+                self.expression()?
+            } else {
+                Expr::Literal(Object::Nil)
+            };
+
             self.consume(SEMICOLON)?;
             Ok(Declaration::VarDecl(Identifier(ident), expr))
         } else {
@@ -835,7 +840,7 @@ impl Interpreter {
         use Expr::*;
 
         Ok(match expr {
-            Literal(t) => t.literal.clone(),
+            Literal(l) => l.clone(),
             Unary(u) => self.eval_unary(u)?,
             Binary(b) => self.eval_binary(b)?,
             Grouping(g) => self.eval_expr(*g)?,
@@ -1021,5 +1026,6 @@ mod tests {
             r("var x = \"foo\"; var y = \"bar\"; x + y;"),
             Object::String("foobar".to_string())
         );
+        assert_eq!(r("var x; x;"), Object::Nil);
     }
 }
