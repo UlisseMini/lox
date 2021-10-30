@@ -454,6 +454,7 @@ pub enum Expr {
     Binary(Binary),
     Grouping(ExprB),
     Identifier(Identifier),
+    Assign(Identifier, ExprB),
 }
 
 impl Expr {
@@ -495,6 +496,7 @@ impl fmt::Display for Expr {
             Binary(bin) => write!(f, "({})", bin),
             Grouping(expr) => write!(f, "(group {})", expr),
             Identifier(ident) => write!(f, "{}", ident),
+            Assign(ident, expr) => write!(f, "(set {} {})", ident, expr),
         }
     }
 }
@@ -617,22 +619,21 @@ impl Parser {
         }
     }
 
-    // This is a literal translation of the BNF style grammer described in
-    // https://craftinginterpreters.com/parsing-expressions.html
-    // In order of increasing precedence
-    /*
-      expression     → equality ;
-      equality       → comparison ( ( "!=" | "==" ) comparison )* ;
-      comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
-      term           → factor ( ( "-" | "+" ) factor )* ;
-      factor         → unary ( ( "/" | "*" ) unary )* ;
-      unary          → ( "!" | "-" ) unary | primary ;
-      primary        → NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
-    */
-    // Parser combinators would make this very nice
-
     fn expression(&mut self) -> Result<Expr, Error> {
-        self.equality()
+        self.assignment()
+    }
+
+    fn assignment(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+
+        if self.advance_if(&[IDENTIFIER]) {
+            let ident = self.previous();
+            self.consume(EQUAL)?;
+            let expr = self.assignment()?; // we support stuff like x = y = 3
+            Ok(Expr::Assign(Identifier(ident), Box::new(expr)))
+        } else {
+            self.equality()
+        }
     }
 
     fn equality(&mut self) -> Result<Expr, Error> {
@@ -786,6 +787,11 @@ impl Environment {
         self.values.insert(key, value);
     }
 
+    // currently the same as define, once I add scope these will be different.
+    fn set(&mut self, key: String, value: Object) -> Option<Object> {
+        self.values.insert(key, value)
+    }
+
     fn get(&self, key: &str) -> Option<&Object> {
         self.values.get(key)
     }
@@ -822,21 +828,21 @@ impl Interpreter {
         }
     }
 
-    fn interpret_statement(&self, statement: Statement) -> Result<Object, Error> {
+    fn interpret_statement(&mut self, statement: Statement) -> Result<Object, Error> {
         match statement {
             Statement::ExprStmt(expr) => self.eval_expr(expr),
             Statement::PrintStmt(operand) => self.print_statement(operand),
         }
     }
 
-    fn print_statement(&self, operand: Expr) -> Result<Object, Error> {
+    fn print_statement(&mut self, operand: Expr) -> Result<Object, Error> {
         let obj = self.eval_expr(operand)?;
         println!("{}", obj);
 
         Ok(Object::Nil)
     }
 
-    fn eval_expr(&self, expr: Expr) -> Result<Object, Error> {
+    fn eval_expr(&mut self, expr: Expr) -> Result<Object, Error> {
         use Expr::*;
 
         Ok(match expr {
@@ -845,10 +851,11 @@ impl Interpreter {
             Binary(b) => self.eval_binary(b)?,
             Grouping(g) => self.eval_expr(*g)?,
             Identifier(i) => self.eval_identifier(i)?,
+            Assign(i, e) => self.eval_assign(i, e)?,
         })
     }
 
-    fn eval_binary(&self, b: Binary) -> Result<Object, Error> {
+    fn eval_binary(&mut self, b: Binary) -> Result<Object, Error> {
         use TokenType::*;
 
         let left = self.eval_expr(*b.left)?;
@@ -872,7 +879,7 @@ impl Interpreter {
         self.fix_res(b.operator, res)
     }
 
-    fn eval_unary(&self, u: Unary) -> Result<Object, Error> {
+    fn eval_unary(&mut self, u: Unary) -> Result<Object, Error> {
         use TokenType::*;
 
         let right = self.eval_expr(*u.right)?;
@@ -887,16 +894,34 @@ impl Interpreter {
     }
 
     fn eval_identifier(&self, ident: Identifier) -> Result<Object, Error> {
-        self.getenv(ident.0)
+        self.getenv(ident)
     }
 
-    fn getenv(&self, ident: Token) -> Result<Object, Error> {
-        match self.env.get(&ident.lexeme) {
+    fn eval_assign(&mut self, ident: Identifier, expr: ExprB) -> Result<Object, Error> {
+        let value = self.eval_expr(*expr)?;
+        self.setenv(ident, value)
+    }
+
+    fn setenv(&mut self, ident: Identifier, value: Object) -> Result<Object, Error> {
+        let name = ident.0.lexeme;
+        match self.env.set(name.clone(), value.clone()) {
+            Some(_previous) => Ok(value), // was already defined
+            // was not defined, error
+            None => Err(Error::new(
+                ident.0.line,
+                "".to_string(),
+                format!("Attempt to assign undefined variable '{}'", name),
+            )),
+        }
+    }
+
+    fn getenv(&self, ident: Identifier) -> Result<Object, Error> {
+        match self.env.get(&ident.0.lexeme) {
             Some(v) => Ok(v.clone()),
             None => Err(Error::new(
-                ident.line,
+                ident.0.line,
                 "".to_string(),
-                format!("Undefined variable '{}'", ident.lexeme),
+                format!("Undefined variable '{}'", ident.0.lexeme),
             )),
         }
     }
@@ -1027,5 +1052,7 @@ mod tests {
             Object::String("foobar".to_string())
         );
         assert_eq!(r("var x; x;"), Object::Nil);
+        assert_eq!(r("var x = 5; x = 2; x;"), Object::Number(2.));
+        // assert_eq!(r("var x = 5; x = y = 2; y+x;"), Object::Number(4.));
     }
 }
