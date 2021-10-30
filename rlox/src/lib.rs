@@ -589,7 +589,6 @@ impl Parser {
     fn declaration(&mut self) -> Result<Declaration, Error> {
         use TokenType::*;
         if self.advance_if(&[VAR]) {
-            // FIXME: This should allow var x; <=> var x = nil;
             self.consume(IDENTIFIER)?;
             let ident = self.previous();
             let expr = if self.advance_if(&[EQUAL]) {
@@ -628,12 +627,13 @@ impl Parser {
 
         if self.advance_if(&[IDENTIFIER]) {
             let ident = self.previous();
-            self.consume(EQUAL)?;
-            let expr = self.assignment()?; // we support stuff like x = y = 3
-            Ok(Expr::Assign(Identifier(ident), Box::new(expr)))
-        } else {
-            self.equality()
+            if self.advance_if(&[EQUAL]) {
+                let expr = self.assignment()?;
+                return Ok(Expr::Assign(Identifier(ident), Box::new(expr)));
+            }
+            self.backup();
         }
+        self.equality()
     }
 
     fn equality(&mut self) -> Result<Expr, Error> {
@@ -737,6 +737,11 @@ impl Parser {
     fn advance(&mut self) {
         self.line = self.tokens[self.current].line;
         self.current += 1;
+    }
+
+    fn backup(&mut self) {
+        self.current -= 1;
+        self.line = self.tokens[self.current].line;
     }
 
     fn at_end(&self) -> bool {
@@ -1053,6 +1058,6 @@ mod tests {
         );
         assert_eq!(r("var x; x;"), Object::Nil);
         assert_eq!(r("var x = 5; x = 2; x;"), Object::Number(2.));
-        // assert_eq!(r("var x = 5; x = y = 2; y+x;"), Object::Number(4.));
+        assert_eq!(r("var x = 5; var y; x = y = 2; y+x;"), Object::Number(4.));
     }
 }
