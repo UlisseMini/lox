@@ -200,7 +200,7 @@ impl Scanner {
         self.chars.append(&mut v);
     }
 
-    fn scan_tokens(&mut self, source: String) -> Result<(), Error> {
+    fn scan_tokens(mut self, source: String) -> Result<Vec<Token>, Error> {
         self.add_chars(source);
 
         while !self.at_end() {
@@ -209,7 +209,7 @@ impl Scanner {
             }
             self.start = self.current;
         }
-        Ok(())
+        Ok(self.tokens)
     }
 
     fn scan_token(&mut self) -> Result<Option<Token>, Error> {
@@ -694,7 +694,6 @@ impl Parser {
         }
     }
 
-    // NUMBER | STRING | "true" | "false" | "nil" | "(" expression ")" ;
     fn primary(&mut self) -> Result<Expr, Error> {
         use TokenType::*;
         // TODO: Rewrite with match
@@ -943,57 +942,42 @@ impl Interpreter {
 }
 
 pub struct Lox {
-    scanner: Scanner,
-    parser: Parser,
     interpreter: Interpreter,
 }
 
 impl Lox {
     pub fn new() -> Lox {
         Lox {
-            scanner: Scanner::new(),
-            parser: Parser::new(),
             interpreter: Interpreter::new(),
         }
     }
 
     pub fn run<S: Into<String>>(&mut self, source: S) -> Result<Object, Error> {
-        // FIXME: Errors cause the interpreter to go into zombie mode since it
-        // FIXME: Stop running the entire program twice for every call to run(),
-        //        run should just execute some more code on an existing program.
-
-        let tokens = self.scan(source)?.clone();
+        let tokens = self.scan(source)?;
         let ast = self.parse(tokens)?;
         eprintln!("{}", ast);
-        let result = self.interpret(ast)?;
-        // rlox is script friendly, stdout is only "real" output.
-        eprint!("=> ");
-        println!("{}", result);
+        let result = self.interpreter.interpret(ast)?;
+        eprintln!("=> {}", result);
 
         Ok(result)
     }
 
-    pub fn scan<S: Into<String>>(&mut self, source: S) -> Result<&Vec<Token>, Error> {
-        self.scanner.scan_tokens(source.into())?;
-        Ok(&self.scanner.tokens)
+    pub fn scan<S: Into<String>>(&mut self, source: S) -> Result<Vec<Token>, Error> {
+        Scanner::new().scan_tokens(source.into())
     }
 
     pub fn parse(&mut self, tokens: Vec<Token>) -> Result<AST, Error> {
-        self.parser.parse_tokens(tokens)
-    }
-
-    pub fn interpret(&mut self, ast: AST) -> Result<Object, Error> {
-        self.interpreter.interpret(ast)
+        Parser::new().parse_tokens(tokens)
     }
 
     // Parse and evaluate a single expression
     pub fn eval(&mut self, source: &str) -> Result<Object, Error> {
         let mut s = source.to_string();
         s.push(';');
-        let tokens = self.scan(s)?.clone();
+        let tokens = self.scan(s)?;
         let ast = self.parse(tokens)?;
         assert!(ast.declarations.len() == 1);
-        self.interpret(ast)
+        self.interpreter.interpret(ast)
     }
 }
 
