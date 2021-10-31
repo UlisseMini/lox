@@ -22,7 +22,7 @@ pub enum TokenType {
     PRINT, RETURN, SUPER, THIS, TRUE, VAR, WHILE,
 
     // Misc
-    COMMENT, EOF
+    EOF
 }
 
 use phf::phf_map;
@@ -242,7 +242,7 @@ impl Scanner {
                     self.advance();
                 }
                 self.start += 2;
-                COMMENT
+                return Ok(None);
             }
             '/' => SLASH,
 
