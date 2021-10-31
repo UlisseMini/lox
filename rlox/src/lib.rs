@@ -393,7 +393,7 @@ impl Scanner {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Error {
     line: usize,
     where_: String,
@@ -505,6 +505,7 @@ impl fmt::Display for Expr {
 pub enum Statement {
     ExprStmt(Expr),
     PrintStmt(Expr),
+    BlockStmt(Vec<Declaration>),
 }
 
 impl fmt::Display for Statement {
@@ -512,6 +513,13 @@ impl fmt::Display for Statement {
         match self {
             Statement::ExprStmt(expr) => write!(f, "{}", expr),
             Statement::PrintStmt(operand) => write!(f, "(print {})", operand),
+            Statement::BlockStmt(decls) => {
+                write!(f, "(block\n")?;
+                for decl in decls {
+                    writeln!(f, "{}", decl)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -611,6 +619,14 @@ impl Parser {
             self.consume(SEMICOLON)?;
 
             Ok(Statement::PrintStmt(operand))
+        } else if self.advance_if(&[LEFT_BRACE]) {
+            let mut statements = Vec::new();
+
+            while !self.advance_if(&[RIGHT_BRACE]) && !self.at_end() {
+                statements.push(self.declaration()?);
+            }
+
+            Ok(Statement::BlockStmt(statements))
         } else {
             let expr = self.expression()?;
             self.consume(SEMICOLON)?;
@@ -777,38 +793,52 @@ use std::collections::HashMap;
 
 #[derive(Debug)]
 struct Environment {
-    values: HashMap<String, Object>,
+    scopes: Vec<HashMap<String, Object>>,
 }
 
 impl Environment {
     fn new() -> Environment {
         let values = HashMap::new();
-        Environment { values }
+        let scopes = vec![values];
+        Environment { scopes }
+    }
+
+    fn push(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop(&mut self) {
+        self.scopes.pop();
     }
 
     fn define(&mut self, key: String, value: Object) {
         // var a = 1; var a = 2; is fine, the second declaration shadows the first.
-        self.values.insert(key, value);
+        self.scopes.last_mut().unwrap().insert(key, value);
     }
 
     // currently the same as define, once I add scope these will be different.
     fn set(&mut self, key: String, value: Object) -> Option<Object> {
-        self.values.insert(key, value)
+        self.scopes.last_mut().unwrap().insert(key, value)
     }
 
     fn get(&self, key: &str) -> Option<&Object> {
-        self.values.get(key)
+        for scope in self.scopes.iter().rev() {
+            if let Some(v) = scope.get(key) {
+                return Some(v);
+            }
+        }
+        return None;
     }
 }
 
 struct Interpreter {
-    env: Environment,
+    env: Box<Environment>,
 }
 
 impl Interpreter {
     fn new() -> Interpreter {
         Interpreter {
-            env: Environment::new(),
+            env: Box::new(Environment::new()),
         }
     }
 
@@ -836,7 +866,20 @@ impl Interpreter {
         match statement {
             Statement::ExprStmt(expr) => self.eval_expr(expr),
             Statement::PrintStmt(operand) => self.print_statement(operand),
+            Statement::BlockStmt(block) => self.block_statement(block),
         }
+    }
+
+    fn block_statement(&mut self, statements: Vec<Declaration>) -> Result<Object, Error> {
+        let mut last = Object::Nil;
+
+        self.env.push();
+        for stmt in statements {
+            last = self.interpret_declaration(stmt)?;
+        }
+        self.env.pop();
+
+        Ok(last)
     }
 
     fn print_statement(&mut self, operand: Expr) -> Result<Object, Error> {
@@ -1043,5 +1086,15 @@ mod tests {
         assert_eq!(r("var x; x;"), Object::Nil);
         assert_eq!(r("var x = 5; x = 2; x;"), Object::Number(2.));
         assert_eq!(r("var x = 5; var y; x = y = 2; y+x;"), Object::Number(4.));
+    }
+
+    #[test]
+    fn test_scope() {
+        let mut lox = Lox::new();
+        assert_eq!(
+            lox.run("var x = 5; { var x = 3; x; }"),
+            Ok(Object::Number(3.))
+        );
+        assert_eq!(lox.run("x;"), Ok(Object::Number(5.)));
     }
 }
