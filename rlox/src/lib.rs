@@ -1097,4 +1097,13 @@ mod tests {
         );
         assert_eq!(lox.run("x;"), Ok(Object::Number(5.)));
     }
+
+    #[test]
+    fn test_scope_wierd() {
+        let mut lox = Lox::new();
+        assert_eq!(
+            lox.run("var a = 1; { var a = a + 2; a; }"),
+            Ok(Object::Number(3.))
+        );
+    }
 }
