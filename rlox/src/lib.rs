@@ -816,9 +816,14 @@ impl Environment {
         self.scopes.last_mut().unwrap().insert(key, value);
     }
 
-    // currently the same as define, once I add scope these will be different.
-    fn set(&mut self, key: String, value: Object) -> Option<Object> {
-        self.scopes.last_mut().unwrap().insert(key, value)
+    fn set(&mut self, key: String, value: Object) -> bool {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.get(&key).is_some() {
+                scope.insert(key, value);
+                return true;
+            }
+        }
+        return false;
     }
 
     fn get(&self, key: &str) -> Option<&Object> {
@@ -951,14 +956,14 @@ impl Interpreter {
 
     fn setenv(&mut self, ident: Identifier, value: Object) -> Result<Object, Error> {
         let name = ident.0.lexeme;
-        match self.env.set(name.clone(), value.clone()) {
-            Some(_previous) => Ok(value), // was already defined
-            // was not defined, error
-            None => Err(Error::new(
+        if !self.env.set(name.clone(), value.clone()) {
+            Err(Error::new(
                 ident.0.line,
                 "".to_string(),
                 format!("Attempt to assign undefined variable '{}'", name),
-            )),
+            ))
+        } else {
+            Ok(value)
         }
     }
 
@@ -986,21 +991,27 @@ impl Interpreter {
 
 pub struct Lox {
     interpreter: Interpreter,
+    pub repl: bool,
 }
 
 impl Lox {
     pub fn new() -> Lox {
         Lox {
             interpreter: Interpreter::new(),
+            repl: false,
         }
     }
 
     pub fn run<S: Into<String>>(&mut self, source: S) -> Result<Object, Error> {
         let tokens = self.scan(source)?;
         let ast = self.parse(tokens)?;
-        eprintln!("{}", ast);
+        if self.repl {
+            eprintln!("{}", ast);
+        }
         let result = self.interpreter.interpret(ast)?;
-        eprintln!("=> {}", result);
+        if self.repl {
+            eprintln!("=> {}", result);
+        }
 
         Ok(result)
     }
@@ -1096,6 +1107,13 @@ mod tests {
             Ok(Object::Number(3.))
         );
         assert_eq!(lox.run("x;"), Ok(Object::Number(5.)));
+    }
+
+    #[test]
+    fn test_scope_assign() {
+        let mut lox = Lox::new();
+        assert_eq!(lox.run("var x = 5; { x = 3; x; }"), Ok(Object::Number(3.)));
+        assert_eq!(lox.run("x;"), Ok(Object::Number(3.)));
     }
 
     #[test]
