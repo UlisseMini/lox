@@ -501,11 +501,14 @@ impl fmt::Display for Expr {
     }
 }
 
+type StatementB = Box<Statement>;
+
 #[derive(Debug)]
 pub enum Statement {
     ExprStmt(Expr),
     PrintStmt(Expr),
     BlockStmt(Vec<Declaration>),
+    IfStmt(Expr, StatementB, Option<StatementB>),
 }
 
 impl fmt::Display for Statement {
@@ -517,6 +520,13 @@ impl fmt::Display for Statement {
                 write!(f, "(block\n")?;
                 for decl in decls {
                     writeln!(f, "{}", decl)?;
+                }
+                write!(f, ")")
+            }
+            Statement::IfStmt(cond, if_branch, else_branch) => {
+                write!(f, "(if {} {}", cond, if_branch)?;
+                if let Some(else_branch) = else_branch {
+                    write!(f, " {}", else_branch)?;
                 }
                 write!(f, ")")
             }
@@ -627,6 +637,19 @@ impl Parser {
             }
 
             Ok(Statement::BlockStmt(statements))
+        } else if self.advance_if(&[IF]) {
+            self.consume(LEFT_PAREN)?;
+            let cond = self.expression()?;
+            self.consume(RIGHT_PAREN)?;
+            let if_branch = Box::new(self.statement()?);
+
+            let else_branch = if self.advance_if(&[ELSE]) {
+                Some(Box::new(self.statement()?))
+            } else {
+                None
+            };
+
+            Ok(Statement::IfStmt(cond, if_branch, else_branch))
         } else {
             let expr = self.expression()?;
             self.consume(SEMICOLON)?;
@@ -872,6 +895,17 @@ impl Interpreter {
             Statement::ExprStmt(expr) => self.eval_expr(expr),
             Statement::PrintStmt(operand) => self.print_statement(operand),
             Statement::BlockStmt(block) => self.block_statement(block),
+            Statement::IfStmt(cond, if_branch, else_branch) => {
+                if self.eval_expr(cond)?.bool()? {
+                    self.interpret_statement(*if_branch)
+                } else {
+                    if let Some(else_branch) = else_branch {
+                        self.interpret_statement(*else_branch)
+                    } else {
+                        Ok(Object::Nil)
+                    }
+                }
+            }
         }
     }
 
@@ -1121,6 +1155,36 @@ mod tests {
         let mut lox = Lox::new();
         assert_eq!(
             lox.run("var a = 1; { var a = a + 2; a; }"),
+            Ok(Object::Number(3.))
+        );
+    }
+
+    #[test]
+    fn test_conditionals() {
+        let mut lox = Lox::new();
+        assert_eq!(
+            lox.run("var x = 5; if (x == 5) { 3; }"),
+            Ok(Object::Number(3.))
+        );
+
+        assert_eq!(
+            lox.run("var x = 5; if (x == 4) { 3; } else { 4; }"),
+            Ok(Object::Number(4.))
+        );
+
+        // else is bound to closest if that precedes it. if you write multiple if-else's on
+        // a single line god help you
+        assert_eq!(
+            lox.run(
+                "
+                var x = 5;
+                if (x == 5)
+                    if (x-1 == 6)
+                        6;
+                    else
+                        3;
+                "
+            ),
             Ok(Object::Number(3.))
         );
     }
