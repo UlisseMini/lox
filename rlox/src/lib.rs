@@ -54,61 +54,30 @@ pub enum Object {
     Bool(bool),
 }
 
+#[rustfmt::skip]
 impl Object {
-    // TODO: Fix this garbage repeating code, either use a macro or restructure code so
-    // that ObjectType is separate from the enum, and thus can be passed as a param.
-    // also this code should have access to the operator token for error handling... changing
-    // the error object after return is such a hack.
-    //
-    // TODO: Another option is to create a 'Function' or 'Operator' trait which has error
-    // handling built in, then implement each operator in that framework. Then we could have
-    // errors like "bad argument Bool(true) as argument 1 to add want number"
+    fn err(&self, want: &str) -> Error {
+        Error::new(
+            0, // error will be caught in Interpreter and the line number will be corrected.
+            "".to_string(),
+            format!("want {} got {:?}", want, self),
+        )
+    }
 
     fn number(&self) -> Result<f64, Error> {
-        match self {
-            Object::Number(n) => Ok(*n),
-
-            // error will be caught in Interpreter and the line number will be corrected.
-            _ => Err(Error::new(
-                0,
-                "".to_string(),
-                format!("want number got {:?}", self),
-            )),
-        }
+        if let Object::Number(n) = self { Ok(*n) } else { Err(self.err("number")) }
     }
 
     fn bool(&self) -> Result<bool, Error> {
-        match self {
-            Object::Bool(b) => Ok(*b),
-            _ => Err(Error::new(
-                0,
-                "".to_string(),
-                format!("want bool got {:?}", self),
-            )),
-        }
-    }
-
-    fn string(self) -> Result<String, Error> {
-        match self {
-            Object::String(s) => Ok(s),
-            _ => Err(Error::new(
-                0,
-                "".to_string(),
-                format!("want string got {:?}", self),
-            )),
-        }
+        if let Object::Bool(b) = self { Ok(*b) } else { Err(self.err("bool")) }
     }
 
     fn add(self, other: Object) -> Result<Object, Error> {
         use Object::*;
-        match self {
-            String(s) => Ok(Object::String(s + &other.string()?)),
-            Number(n) => Ok(Self::Number(n + other.number()?)),
-            _ => Err(Error::new(
-                0,
-                "".to_string(),
-                format!("want number or string, got {:?}", self),
-            )),
+        match (&self, &other) {
+            (String(s), String(o)) => Ok(Object::String(s.to_owned() + o)),
+            (Number(s), Number(o)) => Ok(Object::Number(s + o)),
+            _ => Err(self.err("number or string")),
         }
     }
 
@@ -186,13 +155,7 @@ pub struct Scanner {
 
 impl Scanner {
     fn new() -> Scanner {
-        Scanner {
-            start: 0,
-            current: 0,
-            line: 1,
-            chars: Vec::new(),
-            tokens: Vec::new(),
-        }
+        Scanner { start: 0, current: 0, line: 1, chars: Vec::new(), tokens: Vec::new() }
     }
 
     fn add_chars(&mut self, source: String) {
@@ -326,12 +289,7 @@ impl Scanner {
     }
 
     fn emit_literal(&mut self, type_: TokenType, literal: Object) -> Token {
-        Token {
-            type_: type_,
-            lexeme: self.lexeme(),
-            literal: literal,
-            line: self.line,
-        }
+        Token { type_: type_, lexeme: self.lexeme(), literal: literal, line: self.line }
     }
 
     fn emit_token(&mut self, type_: TokenType) -> Token {
@@ -402,21 +360,13 @@ pub struct Error {
 
 impl Error {
     fn new(line: usize, where_: String, message: String) -> Error {
-        return Error {
-            line,
-            where_,
-            message,
-        };
+        return Error { line, where_, message };
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[line {}] Error{}: {}",
-            self.line, self.where_, self.message
-        )
+        write!(f, "[line {}] Error{}: {}", self.line, self.where_, self.message)
     }
 }
 
@@ -459,18 +409,11 @@ pub enum Expr {
 
 impl Expr {
     fn binary(left: Expr, operator: Token, right: Expr) -> Expr {
-        Expr::Binary(Binary {
-            left: Box::new(left),
-            operator: operator,
-            right: Box::new(right),
-        })
+        Expr::Binary(Binary { left: Box::new(left), operator: operator, right: Box::new(right) })
     }
 
     fn unary(operator: Token, right: Expr) -> Expr {
-        Expr::Unary(Unary {
-            operator: operator,
-            right: Box::new(right),
-        })
+        Expr::Unary(Unary { operator: operator, right: Box::new(right) })
     }
 
     fn grouping(expr: Expr) -> Expr {
@@ -583,11 +526,7 @@ impl Parser {
         let current = 0;
         let line = 1;
         let tokens = Vec::new();
-        Parser {
-            tokens,
-            current,
-            line,
-        }
+        Parser { tokens, current, line }
     }
 
     fn parse_tokens(&mut self, mut tokens: Vec<Token>) -> Result<AST, Error> {
@@ -643,11 +582,8 @@ impl Parser {
             self.consume(RIGHT_PAREN)?;
             let if_branch = Box::new(self.statement()?);
 
-            let else_branch = if self.advance_if(&[ELSE]) {
-                Some(Box::new(self.statement()?))
-            } else {
-                None
-            };
+            let else_branch =
+                if self.advance_if(&[ELSE]) { Some(Box::new(self.statement()?)) } else { None };
 
             Ok(Statement::IfStmt(cond, if_branch, else_branch))
         } else {
@@ -865,9 +801,7 @@ struct Interpreter {
 
 impl Interpreter {
     fn new() -> Interpreter {
-        Interpreter {
-            env: Box::new(Environment::new()),
-        }
+        Interpreter { env: Box::new(Environment::new()) }
     }
 
     fn interpret(&mut self, ast: AST) -> Result<Object, Error> {
@@ -1030,10 +964,7 @@ pub struct Lox {
 
 impl Lox {
     pub fn new() -> Lox {
-        Lox {
-            interpreter: Interpreter::new(),
-            repl: false,
-        }
+        Lox { interpreter: Interpreter::new(), repl: false }
     }
 
     pub fn run<S: Into<String>>(&mut self, source: S) -> Result<Object, Error> {
@@ -1088,10 +1019,7 @@ mod tests {
         assert_eq!(s("2 >= 3 + 4*2;"), "(>= 2 (+ 3 (* 4 2)))");
         assert_eq!(s("2 >= (3 + 4)*2;"), "(>= 2 (* (group (+ 3 4)) 2))");
         assert_eq!(s("print 3 >= 2;"), "(print (>= 3 2))");
-        assert_eq!(
-            s("print 3 >= 2; print 5+3;"),
-            "(print (>= 3 2))\n(print (+ 5 3))"
-        );
+        assert_eq!(s("print 3 >= 2; print 5+3;"), "(print (>= 3 2))\n(print (+ 5 3))");
     }
 
     #[test]
@@ -1136,10 +1064,7 @@ mod tests {
     #[test]
     fn test_scope() {
         let mut lox = Lox::new();
-        assert_eq!(
-            lox.run("var x = 5; { var x = 3; x; }"),
-            Ok(Object::Number(3.))
-        );
+        assert_eq!(lox.run("var x = 5; { var x = 3; x; }"), Ok(Object::Number(3.)));
         assert_eq!(lox.run("x;"), Ok(Object::Number(5.)));
     }
 
@@ -1153,24 +1078,15 @@ mod tests {
     #[test]
     fn test_scope_wierd() {
         let mut lox = Lox::new();
-        assert_eq!(
-            lox.run("var a = 1; { var a = a + 2; a; }"),
-            Ok(Object::Number(3.))
-        );
+        assert_eq!(lox.run("var a = 1; { var a = a + 2; a; }"), Ok(Object::Number(3.)));
     }
 
     #[test]
     fn test_conditionals() {
         let mut lox = Lox::new();
-        assert_eq!(
-            lox.run("var x = 5; if (x == 5) { 3; }"),
-            Ok(Object::Number(3.))
-        );
+        assert_eq!(lox.run("var x = 5; if (x == 5) { 3; }"), Ok(Object::Number(3.)));
 
-        assert_eq!(
-            lox.run("var x = 5; if (x == 4) { 3; } else { 4; }"),
-            Ok(Object::Number(4.))
-        );
+        assert_eq!(lox.run("var x = 5; if (x == 4) { 3; } else { 4; }"), Ok(Object::Number(4.)));
 
         // else is bound to closest if that precedes it. if you write multiple if-else's on
         // a single line god help you
