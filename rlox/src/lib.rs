@@ -360,7 +360,7 @@ pub struct Error {
 
 impl Error {
     fn new(line: usize, where_: String, message: String) -> Error {
-        return Error { line, where_, message };
+        return Error { line: line, where_: where_.into(), message: message.into() };
     }
 }
 
@@ -398,6 +398,19 @@ impl fmt::Display for Unary {
 }
 
 #[derive(Debug)]
+pub struct Logical {
+    left: ExprB,
+    operator: Token,
+    right: ExprB,
+}
+
+impl fmt::Display for Logical {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.operator, self.left, self.right)
+    }
+}
+
+#[derive(Debug)]
 pub enum Expr {
     Literal(Object),
     Unary(Unary),
@@ -405,6 +418,7 @@ pub enum Expr {
     Grouping(ExprB),
     Identifier(Identifier),
     Assign(Identifier, ExprB),
+    Logical(Logical),
 }
 
 impl Expr {
@@ -427,6 +441,16 @@ impl Expr {
             _ => panic!("{:?} is not a literal", tok),
         }
     }
+
+    fn logical(left: Expr, operator: Token, right: Expr) -> Expr {
+        use TokenType::*;
+        Expr::Logical(match operator.type_ {
+            OR | AND => {
+                Logical { left: Box::new(left), operator: operator, right: Box::new(right) }
+            }
+            _ => panic!("{:?} is not a logical operator", operator),
+        })
+    }
 }
 
 impl fmt::Display for Expr {
@@ -440,6 +464,7 @@ impl fmt::Display for Expr {
             Grouping(expr) => write!(f, "(group {})", expr),
             Identifier(ident) => write!(f, "{}", ident),
             Assign(ident, expr) => write!(f, "(set {} {})", ident, expr),
+            Logical(l) => write!(f, "({})", l),
         }
     }
 }
@@ -608,7 +633,27 @@ impl Parser {
             }
             self.backup();
         }
-        self.equality()
+        self.logic_or()
+    }
+
+    fn logic_or(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.logic_and()?;
+        while self.advance_if(&[TokenType::OR]) {
+            let operator = self.previous();
+            let right = self.logic_and()?;
+            expr = Expr::logical(expr, operator, right);
+        }
+        Ok(expr)
+    }
+
+    fn logic_and(&mut self) -> Result<Expr, Error> {
+        let mut expr = self.equality()?;
+        while self.advance_if(&[TokenType::AND]) {
+            let operator = self.previous();
+            let right = self.equality()?;
+            expr = Expr::logical(expr, operator, right);
+        }
+        Ok(expr)
     }
 
     fn equality(&mut self) -> Result<Expr, Error> {
@@ -872,6 +917,7 @@ impl Interpreter {
             Grouping(g) => self.eval_expr(*g)?,
             Identifier(i) => self.eval_identifier(i)?,
             Assign(i, e) => self.eval_assign(i, e)?,
+            Logical(l) => self.eval_logical(l)?,
         })
     }
 
@@ -920,6 +966,52 @@ impl Interpreter {
     fn eval_assign(&mut self, ident: Identifier, expr: ExprB) -> Result<Object, Error> {
         let value = self.eval_expr(*expr)?;
         self.setenv(ident, value)
+    }
+
+    fn eval_logical(&mut self, l: Logical) -> Result<Object, Error> {
+        match l.operator.type_ {
+            TokenType::OR => self.eval_or(l),
+            TokenType::AND => self.eval_and(l),
+            _ => panic!("invalid logical operator {:?}", l),
+        }
+    }
+
+    fn eval_or(&mut self, l: Logical) -> Result<Object, Error> {
+        let left = self.eval_expr(*l.left)?;
+
+        match left {
+            Object::Bool(b) => {
+                if b {
+                    Ok(Object::Bool(true))
+                } else {
+                    self.eval_expr(*l.right)
+                }
+            }
+            _ => Err(Error::new(
+                l.operator.line,
+                "".to_string(),
+                format!("want bool got {:?}", left),
+            )),
+        }
+    }
+
+    fn eval_and(&mut self, l: Logical) -> Result<Object, Error> {
+        let left = self.eval_expr(*l.left)?;
+
+        match left {
+            Object::Bool(b) => {
+                if b {
+                    self.eval_expr(*l.right)
+                } else {
+                    Ok(Object::Bool(false))
+                }
+            }
+            _ => Err(Error::new(
+                l.operator.line,
+                "".to_string(),
+                format!("want bool got {:?}", left),
+            )),
+        }
     }
 
     fn setenv(&mut self, ident: Identifier, value: Object) -> Result<Object, Error> {
@@ -1103,5 +1195,23 @@ mod tests {
             ),
             Ok(Object::Number(3.))
         );
+    }
+
+    #[test]
+    fn test_logical_or() {
+        let mut lox = Lox::new();
+        assert_eq!(lox.run("true or false;"), Ok(Object::Bool(true)));
+        assert_eq!(lox.run("true or true;"), Ok(Object::Bool(true)));
+        assert_eq!(lox.run("false or true;"), Ok(Object::Bool(true)));
+        assert_eq!(lox.run("false or false;"), Ok(Object::Bool(false)));
+    }
+
+    #[test]
+    fn test_logical_and() {
+        let mut lox = Lox::new();
+        assert_eq!(lox.run("true and false;"), Ok(Object::Bool(false)));
+        assert_eq!(lox.run("false and true;"), Ok(Object::Bool(false)));
+        assert_eq!(lox.run("false and false;"), Ok(Object::Bool(false)));
+        assert_eq!(lox.run("true and true;"), Ok(Object::Bool(true)));
     }
 }
