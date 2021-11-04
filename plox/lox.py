@@ -69,7 +69,7 @@ class Scanner:
         self.advance_while(lambda c: c != '"')
         assert not self.at_end(), 'eof before end of string'
         self.advance()
-        return self.emit()
+        return self.emit(literal=self.lexeme()[1:-1])
 
     def scan_sym(self, char: str):
         two = char + self.peek()
