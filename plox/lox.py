@@ -13,10 +13,6 @@ class Token:
     def __str__(self):
         return self.lexeme
 
-    def __bool__(self):
-        # eof is represented as an empty lexeme
-        return self.lexeme != ''
-
 
 # some predicates for parsing
 is_digit = lambda c: c in string.digits
