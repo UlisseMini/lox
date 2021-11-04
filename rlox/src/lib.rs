@@ -473,25 +473,25 @@ type StatementB = Box<Statement>;
 
 #[derive(Debug)]
 pub enum Statement {
-    ExprStmt(Expr),
-    PrintStmt(Expr),
-    BlockStmt(Vec<Declaration>),
-    IfStmt(Expr, StatementB, Option<StatementB>),
+    Expr(Expr),
+    Print(Expr),
+    Block(Vec<Declaration>),
+    If(Expr, StatementB, Option<StatementB>),
 }
 
 impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Statement::ExprStmt(expr) => write!(f, "{}", expr),
-            Statement::PrintStmt(operand) => write!(f, "(print {})", operand),
-            Statement::BlockStmt(decls) => {
+            Statement::Expr(expr) => write!(f, "{}", expr),
+            Statement::Print(operand) => write!(f, "(print {})", operand),
+            Statement::Block(decls) => {
                 write!(f, "(block\n")?;
                 for decl in decls {
                     writeln!(f, "{}", decl)?;
                 }
                 write!(f, ")")
             }
-            Statement::IfStmt(cond, if_branch, else_branch) => {
+            Statement::If(cond, if_branch, else_branch) => {
                 write!(f, "(if {} {}", cond, if_branch)?;
                 if let Some(else_branch) = else_branch {
                     write!(f, " {}", else_branch)?;
@@ -668,7 +668,7 @@ impl Parser {
             let operand = self.expression()?;
             self.consume(SEMICOLON)?;
 
-            Ok(Statement::PrintStmt(operand))
+            Ok(Statement::Print(operand))
         } else if self.advance_if(&[LEFT_BRACE]) {
             let mut statements = Vec::new();
 
@@ -676,7 +676,7 @@ impl Parser {
                 statements.push(self.declaration()?);
             }
 
-            Ok(Statement::BlockStmt(statements))
+            Ok(Statement::Block(statements))
         } else if self.advance_if(&[IF]) {
             self.consume(LEFT_PAREN)?;
             let cond = self.expression()?;
@@ -686,11 +686,11 @@ impl Parser {
             let else_branch =
                 if self.advance_if(&[ELSE]) { Some(Box::new(self.statement()?)) } else { None };
 
-            Ok(Statement::IfStmt(cond, if_branch, else_branch))
+            Ok(Statement::If(cond, if_branch, else_branch))
         } else {
             let expr = self.expression()?;
             self.consume(SEMICOLON)?;
-            Ok(Statement::ExprStmt(expr))
+            Ok(Statement::Expr(expr))
         }
     }
 
@@ -854,10 +854,10 @@ impl Interpreter {
 
     fn interpret_statement(&mut self, statement: Statement) -> Result<Object, Error> {
         match statement {
-            Statement::ExprStmt(expr) => self.eval_expr(expr),
-            Statement::PrintStmt(operand) => self.print_statement(operand),
-            Statement::BlockStmt(block) => self.block_statement(block),
-            Statement::IfStmt(cond, if_branch, else_branch) => {
+            Statement::Expr(expr) => self.eval_expr(expr),
+            Statement::Print(operand) => self.print_statement(operand),
+            Statement::Block(block) => self.block_statement(block),
+            Statement::If(cond, if_branch, else_branch) => {
                 if self.eval_expr(cond)?.bool()? {
                     self.interpret_statement(*if_branch)
                 } else {
