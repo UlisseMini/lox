@@ -545,6 +545,8 @@ pub struct Parser {
     line: usize,
 }
 
+type ParseMethod<T> = fn(&mut Parser) -> Result<T, Error>;
+
 // Parsing is essentially the same as scanning, except every character is now a token.
 impl Parser {
     fn new() -> Parser {
@@ -552,188 +554,6 @@ impl Parser {
         let line = 1;
         let tokens = Vec::new();
         Parser { tokens, current, line }
-    }
-
-    fn parse_tokens(&mut self, mut tokens: Vec<Token>) -> Result<AST, Error> {
-        self.tokens.append(&mut tokens);
-        self.parse_program()
-    }
-
-    fn parse_program(&mut self) -> Result<AST, Error> {
-        let mut declarations = Vec::new();
-        while !self.at_end() {
-            declarations.push(self.declaration()?);
-        }
-
-        Ok(AST { declarations })
-    }
-
-    fn declaration(&mut self) -> Result<Declaration, Error> {
-        use TokenType::*;
-        if self.advance_if(&[VAR]) {
-            self.consume(IDENTIFIER)?;
-            let ident = self.previous();
-            let expr = if self.advance_if(&[EQUAL]) {
-                self.expression()?
-            } else {
-                Expr::Literal(Object::Nil)
-            };
-
-            self.consume(SEMICOLON)?;
-            Ok(Declaration::VarDecl(Identifier(ident), expr))
-        } else {
-            Ok(Declaration::Statement(self.statement()?))
-        }
-    }
-
-    fn statement(&mut self) -> Result<Statement, Error> {
-        use TokenType::*;
-        if self.advance_if(&[PRINT]) {
-            let operand = self.expression()?;
-            self.consume(SEMICOLON)?;
-
-            Ok(Statement::PrintStmt(operand))
-        } else if self.advance_if(&[LEFT_BRACE]) {
-            let mut statements = Vec::new();
-
-            while !self.advance_if(&[RIGHT_BRACE]) && !self.at_end() {
-                statements.push(self.declaration()?);
-            }
-
-            Ok(Statement::BlockStmt(statements))
-        } else if self.advance_if(&[IF]) {
-            self.consume(LEFT_PAREN)?;
-            let cond = self.expression()?;
-            self.consume(RIGHT_PAREN)?;
-            let if_branch = Box::new(self.statement()?);
-
-            let else_branch =
-                if self.advance_if(&[ELSE]) { Some(Box::new(self.statement()?)) } else { None };
-
-            Ok(Statement::IfStmt(cond, if_branch, else_branch))
-        } else {
-            let expr = self.expression()?;
-            self.consume(SEMICOLON)?;
-            Ok(Statement::ExprStmt(expr))
-        }
-    }
-
-    fn expression(&mut self) -> Result<Expr, Error> {
-        self.assignment()
-    }
-
-    fn assignment(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-
-        if self.advance_if(&[IDENTIFIER]) {
-            let ident = self.previous();
-            if self.advance_if(&[EQUAL]) {
-                let expr = self.assignment()?;
-                return Ok(Expr::Assign(Identifier(ident), Box::new(expr)));
-            }
-            self.backup();
-        }
-        self.logic_or()
-    }
-
-    fn logic_or(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.logic_and()?;
-        while self.advance_if(&[TokenType::OR]) {
-            let operator = self.previous();
-            let right = self.logic_and()?;
-            expr = Expr::logical(expr, operator, right);
-        }
-        Ok(expr)
-    }
-
-    fn logic_and(&mut self) -> Result<Expr, Error> {
-        let mut expr = self.equality()?;
-        while self.advance_if(&[TokenType::AND]) {
-            let operator = self.previous();
-            let right = self.equality()?;
-            expr = Expr::logical(expr, operator, right);
-        }
-        Ok(expr)
-    }
-
-    fn equality(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-
-        let mut expr = self.comparison()?;
-        while self.advance_if(&[EQUAL_EQUAL, BANG_EQUAL]) {
-            let operator = self.previous();
-            let right = self.comparison()?;
-            expr = Expr::binary(expr, operator, right);
-        }
-        Ok(expr)
-    }
-
-    fn comparison(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-
-        let mut expr = self.term()?;
-        while self.advance_if(&[GREATER, GREATER_EQUAL, LESS, LESS_EQUAL]) {
-            let operator = self.previous();
-            let right = self.term()?;
-            expr = Expr::binary(expr, operator, right);
-        }
-        Ok(expr)
-    }
-
-    fn term(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-        let mut expr = self.factor()?;
-        while self.advance_if(&[PLUS, MINUS]) {
-            let operator = self.previous();
-            let right = self.factor()?;
-            expr = Expr::binary(expr, operator, right);
-        }
-        Ok(expr)
-    }
-
-    fn factor(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-        let mut expr = self.unary()?;
-        while self.advance_if(&[SLASH, STAR]) {
-            let operator = self.previous();
-            let right = self.unary()?;
-            expr = Expr::binary(expr, operator, right);
-        }
-        Ok(expr)
-    }
-
-    fn unary(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-
-        if self.advance_if(&[BANG, MINUS]) {
-            let operator = self.previous();
-            let right = self.unary()?;
-            Ok(Expr::unary(operator, right))
-        } else {
-            self.primary()
-        }
-    }
-
-    fn primary(&mut self) -> Result<Expr, Error> {
-        use TokenType::*;
-        // TODO: Rewrite with match
-
-        if self.advance_if(&[NUMBER, STRING, TRUE, FALSE, NIL]) {
-            Ok(Expr::literal(self.previous()))
-        } else if self.advance_if(&[LEFT_PAREN]) {
-            let expr = self.expression()?;
-            self.consume(RIGHT_PAREN)?;
-            Ok(Expr::grouping(expr))
-        } else if self.advance_if(&[IDENTIFIER]) {
-            Ok(Expr::Identifier(Identifier(self.previous())))
-        } else {
-            let tok = self.current();
-            Err(Error::new(
-                tok.line,
-                "".to_string(),
-                format!("Expected expression, got {:?}", tok.type_),
-            ))
-        }
     }
 
     fn current(&mut self) -> Token {
@@ -788,6 +608,169 @@ impl Parser {
                 tok.line,
                 "".to_string(),
                 format!("expected {:?} got {:?}", type_, tok.type_),
+            ))
+        }
+    }
+
+    fn parse_binop_expr(
+        &mut self,
+        types: &[TokenType],
+        f: ParseMethod<Expr>,
+        g: fn(Expr, Token, Expr) -> Expr,
+    ) -> Result<Expr, Error> {
+        let mut expr = f(self)?;
+        while self.advance_if(types) {
+            let operator = self.previous();
+            let right = f(self)?;
+            expr = g(expr, operator, right);
+        }
+        Ok(expr)
+    }
+
+    // ------------------------ Begin parsing ------------------------
+
+    fn parse_tokens(&mut self, mut tokens: Vec<Token>) -> Result<AST, Error> {
+        self.tokens.append(&mut tokens);
+        self.parse_program()
+    }
+
+    fn parse_program(&mut self) -> Result<AST, Error> {
+        let mut declarations = Vec::new();
+        while !self.at_end() {
+            declarations.push(self.declaration()?);
+        }
+
+        Ok(AST { declarations })
+    }
+
+    fn declaration(&mut self) -> Result<Declaration, Error> {
+        if self.advance_if(&[TokenType::VAR]) {
+            self.parse_var()
+        } else {
+            Ok(Declaration::Statement(self.statement()?))
+        }
+    }
+
+    fn parse_var(&mut self) -> Result<Declaration, Error> {
+        use TokenType::*;
+        self.consume(IDENTIFIER)?;
+        let ident = self.previous();
+        let expr =
+            if self.advance_if(&[EQUAL]) { self.expression()? } else { Expr::Literal(Object::Nil) };
+        self.consume(SEMICOLON)?;
+
+        Ok(Declaration::VarDecl(Identifier(ident), expr))
+    }
+
+    fn statement(&mut self) -> Result<Statement, Error> {
+        use TokenType::*;
+        if self.advance_if(&[PRINT]) {
+            let operand = self.expression()?;
+            self.consume(SEMICOLON)?;
+
+            Ok(Statement::PrintStmt(operand))
+        } else if self.advance_if(&[LEFT_BRACE]) {
+            let mut statements = Vec::new();
+
+            while !self.advance_if(&[RIGHT_BRACE]) && !self.at_end() {
+                statements.push(self.declaration()?);
+            }
+
+            Ok(Statement::BlockStmt(statements))
+        } else if self.advance_if(&[IF]) {
+            self.consume(LEFT_PAREN)?;
+            let cond = self.expression()?;
+            self.consume(RIGHT_PAREN)?;
+            let if_branch = Box::new(self.statement()?);
+
+            let else_branch =
+                if self.advance_if(&[ELSE]) { Some(Box::new(self.statement()?)) } else { None };
+
+            Ok(Statement::IfStmt(cond, if_branch, else_branch))
+        } else {
+            let expr = self.expression()?;
+            self.consume(SEMICOLON)?;
+            Ok(Statement::ExprStmt(expr))
+        }
+    }
+
+    fn expression(&mut self) -> Result<Expr, Error> {
+        self.assignment()
+    }
+
+    fn assignment(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+
+        if self.advance_if(&[IDENTIFIER]) {
+            let ident = self.previous();
+            if self.advance_if(&[EQUAL]) {
+                let expr = self.assignment()?;
+                return Ok(Expr::Assign(Identifier(ident), Box::new(expr)));
+            }
+            self.backup();
+        }
+        self.logic_or()
+    }
+
+    // logic_or = logic_and ("or" logic_and)*
+    fn logic_or(&mut self) -> Result<Expr, Error> {
+        self.parse_binop_expr(&[TokenType::OR], Self::logic_and, Expr::logical)
+    }
+
+    fn logic_and(&mut self) -> Result<Expr, Error> {
+        self.parse_binop_expr(&[TokenType::AND], Self::equality, Expr::logical)
+    }
+
+    fn equality(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        self.parse_binop_expr(&[EQUAL_EQUAL, BANG_EQUAL], Self::comparison, Expr::binary)
+    }
+
+    fn comparison(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        self.parse_binop_expr(&[GREATER, GREATER_EQUAL, LESS, LESS_EQUAL], Self::term, Expr::binary)
+    }
+
+    fn term(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        self.parse_binop_expr(&[PLUS, MINUS], Self::factor, Expr::binary)
+    }
+
+    fn factor(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        self.parse_binop_expr(&[SLASH, STAR], Self::unary, Expr::binary)
+    }
+
+    fn unary(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+
+        if self.advance_if(&[BANG, MINUS]) {
+            let operator = self.previous();
+            let right = self.unary()?;
+            Ok(Expr::unary(operator, right))
+        } else {
+            self.primary()
+        }
+    }
+
+    fn primary(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        // TODO: Rewrite with match
+
+        if self.advance_if(&[NUMBER, STRING, TRUE, FALSE, NIL]) {
+            Ok(Expr::literal(self.previous()))
+        } else if self.advance_if(&[LEFT_PAREN]) {
+            let expr = self.expression()?;
+            self.consume(RIGHT_PAREN)?;
+            Ok(Expr::grouping(expr))
+        } else if self.advance_if(&[IDENTIFIER]) {
+            Ok(Expr::Identifier(Identifier(self.previous())))
+        } else {
+            let tok = self.current();
+            Err(Error::new(
+                tok.line,
+                "".to_string(),
+                format!("Expected expression, got {:?}", tok.type_),
             ))
         }
     }
