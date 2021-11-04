@@ -88,18 +88,115 @@ class Scanner:
         return self.emit()
 
 
-tests = [
-    ("3*foo+5.2", '3 * foo + 5.2'),
-    ("foo != !bar", 'foo != ! bar'),
-    ("if(foo != bar)", 'if ( foo != bar )'),
-    ('if(foo != bar) { print "cats"; }', 'if ( foo != bar ) { print "cats" ; }'),
-    ('while(foo!=bar){print "dogs"; foo=bar+1;}',
-     'while ( foo != bar ) { print "dogs" ; foo = bar + 1 ; }'),
-]
+def test_scanner():
+    tests = [
+        ("3*foo+5.2", '3 * foo + 5.2'),
+        ("foo != !bar", 'foo != ! bar'),
+        ("if(foo != bar)", 'if ( foo != bar )'),
+        ('if(foo != bar) { print "cats"; }', 'if ( foo != bar ) { print "cats" ; }'),
+        ('while(foo!=bar){print "dogs"; foo=bar+1;}',
+         'while ( foo != bar ) { print "dogs" ; foo = bar + 1 ; }'),
+    ]
 
-for source, want in tests:
-    got_tokens = list(Scanner(source).scan())
-    got = ' '.join([str(tok) for tok in got_tokens])
-    assert want == got, f'got "{got}" want "{want}"'
+    for source, want in tests:
+        got_tokens = list(Scanner(source).scan())
+        got = ' '.join([str(tok) for tok in got_tokens])
+        assert want == got, f'got "{got}" want "{want}"'
 
-print(f'Tests passed')
+
+# ==================== Parser ==================== 
+
+class Parser:
+    def __init__(self, tokens):
+        self.tokens = list(tokens)
+        self.current = 0
+
+    # ======== Helpers ========
+
+    def at_end(self):
+        return self.current >= len(self.tokens)
+
+    def peek(self):
+        return self.tokens[self.current]
+
+    def advance(self):
+        tok = self.peek()
+        self.current += 1
+        return tok
+
+    def error(self, msg: str):
+        raise ValueError(msg)
+
+    def eat(self, want: str):
+        if self.at_end(): self.error(f'want {want} got EOF')
+        got = self.advance()
+        if got.lexeme != want: self.error(f'want {want} got {got}')
+
+    def until(self, cond, method):
+        res = []
+        while not self.at_end() and not cond(): res.append(method())
+        return res
+
+    # ======== Parse ========
+
+    def parse(self):
+        statements = []
+        while not self.at_end():
+            statements.append(self.parse_statement())
+
+        return statements
+
+    def parse_statement(self):
+        token = self.advance()
+
+        if token.lexeme == 'if':
+            self.eat('(')
+            cond = self.parse_expr()
+            self.eat(')')
+            stmt = self.parse_statement()
+            return ('if', cond, stmt)
+        elif token.lexeme == '{':
+            return self.parse_block()
+        elif token.lexeme == 'print':
+            operand = self.parse_expr()
+            self.eat(';')
+            return ('print', operand)
+        else:
+            print(f'{token.lexeme} not handled')
+
+    def parse_block(self):
+        stmts = self.until(lambda: self.peek().lexeme == '}', self.parse_statement)
+        self.eat('}')
+        return stmts
+
+    def parse_expr(self):
+        expr = self.advance().literal
+
+        while self.peek().lexeme in '+*/-':
+            op = self.advance()
+            rhs = self.parse_expr()
+            expr = (op.lexeme, expr, rhs)
+
+        return expr
+
+
+def sexpr(ast) -> str:
+    if isinstance(ast, list):
+        return '\n'.join(map(sexpr, ast))
+    elif isinstance(ast, tuple):
+        return '(' + ' '.join(map(sexpr, ast)) + ')'
+    else:
+        return str(ast)
+
+
+def test_parser():
+    source = 'if(2 + 3) { print "foo"; }'
+    tokens = Scanner(source).scan()
+    ast = Parser(tokens).parse()
+    print('AST:')
+    print(sexpr(ast))
+
+
+if __name__ == '__main__':
+    test_scanner()
+    test_parser()
