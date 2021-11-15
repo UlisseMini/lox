@@ -273,8 +273,21 @@ impl Scanner {
 
     // this shoulden't return an option, I just did this to line the types up with scan_token.
     fn string(&mut self) -> Result<Option<Token>, Error> {
+        let mut string = String::new();
+        let mut prev = '\0';
         while self.peek() != '"' && !self.at_end() {
-            self.advance();
+            let c = self.advance();
+            // if c is \n, and prev is not \, ie. the \ is not escaped
+            if c == '\\' && prev != '\\' {
+                if self.advance_if('n') {
+                    string.push('\n');
+                }
+                // we don't want to push an escaped backslash, since we already
+                // did previously. we want "\\" -> \
+            } else {
+                string.push(c);
+            }
+            prev = c;
         }
         if self.at_end() {
             return Err(self.error(format!("Missing end of string")));
@@ -283,7 +296,7 @@ impl Scanner {
         // this is a mildly cursed way to ignore the quotes, whatever
 
         self.start += 1; // ignore the first '"'
-        let token = self.emit_literal(TokenType::STRING, Object::String(self.lexeme()));
+        let token = self.emit_literal(TokenType::STRING, Object::String(string));
 
         self.advance(); // consume the closing '"'
         return Ok(Some(token));
@@ -905,12 +918,15 @@ impl Interpreter {
     }
 
     fn print_statement(&mut self, operand: &Expr) -> Result<Object, Error> {
+        use std::io::{stdout, Write};
+
         let obj = self.eval_expr(operand)?;
         if let Object::String(s) = obj {
-            println!("{}", s);
+            print!("{}", s);
         } else {
-            println!("{}", obj);
+            print!("{}", obj);
         }
+        stdout().flush().expect("failed to flush stdout");
 
         Ok(Object::Nil)
     }
@@ -1238,5 +1254,14 @@ mod tests {
         assert_eq!(lox.run("4 % 2;"), Ok(Object::Number(0.)));
         assert_eq!(lox.run("5 % 2;"), Ok(Object::Number(1.)));
         assert_eq!(lox.run("7 % 4;"), Ok(Object::Number(3.)));
+    }
+
+    #[test]
+    fn test_lex_string() {
+        let tokens = Scanner::new().scan_tokens("\"foo\\nbar\"".into()).unwrap();
+        assert_eq!(tokens[0].literal, Object::String("foo\nbar".into()));
+
+        let tokens = Scanner::new().scan_tokens("\"foo\\\\nbar\"".into()).unwrap();
+        assert_eq!(tokens[0].literal, Object::String("foo\\nbar".into()));
     }
 }
