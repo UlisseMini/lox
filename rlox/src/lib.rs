@@ -6,7 +6,7 @@ use std::fmt;
 pub enum TokenType {
     // Single character
     LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
-    COMMA, DOT, MINUS, PLUS, SEMICOLON, SLASH, STAR,
+    COMMA, DOT, MINUS, PLUS, SEMICOLON, SLASH, STAR, PERCENT,
 
     // One or two
     BANG, BANG_EQUAL,
@@ -91,6 +91,10 @@ impl Object {
 
     fn div(self, other: Self) -> Result<Self, Error> {
         Ok(Self::Number(self.number()? / other.number()?))
+    }
+
+    fn modulo(self, other: Self) -> Result<Self, Error> {
+        Ok(Self::Number(self.number()? % other.number()?))
     }
 
     fn neg(self) -> Result<Self, Error> {
@@ -190,6 +194,7 @@ impl Scanner {
             '+' => PLUS,
             ';' => SEMICOLON,
             '*' => STAR,
+            '%' => PERCENT,
 
             '!' if self.advance_if('=') => BANG_EQUAL,
             '!' => BANG,
@@ -748,7 +753,7 @@ impl Parser {
 
     fn factor(&mut self) -> Result<Expr, Error> {
         use TokenType::*;
-        self.parse_binop_expr(&[SLASH, STAR], Self::unary, Expr::binary)
+        self.parse_binop_expr(&[SLASH, STAR, PERCENT], Self::unary, Expr::binary)
     }
 
     fn unary(&mut self) -> Result<Expr, Error> {
@@ -901,7 +906,11 @@ impl Interpreter {
 
     fn print_statement(&mut self, operand: &Expr) -> Result<Object, Error> {
         let obj = self.eval_expr(operand)?;
-        println!("{}", obj);
+        if let Object::String(s) = obj {
+            println!("{}", s);
+        } else {
+            println!("{}", obj);
+        }
 
         Ok(Object::Nil)
     }
@@ -930,6 +939,7 @@ impl Interpreter {
             PLUS => left.add(right),
             STAR => left.mul(right),
             SLASH => left.div(right),
+            PERCENT => left.modulo(right),
             MINUS => left.sub(right),
             EQUAL_EQUAL => Ok(Object::Bool(left == right)),
             BANG_EQUAL => Ok(Object::Bool(left != right)),
@@ -1220,5 +1230,13 @@ mod tests {
         assert_eq!(lox.run("var x = 5;"), Ok(Object::Nil));
         assert_eq!(lox.run("while (x < 10) { x = x + 1; }"), Ok(Object::Nil));
         assert_eq!(lox.run("x;"), Ok(Object::Number(10.)));
+    }
+
+    #[test]
+    fn test_modulo() {
+        let mut lox = Lox::new();
+        assert_eq!(lox.run("4 % 2;"), Ok(Object::Number(0.)));
+        assert_eq!(lox.run("5 % 2;"), Ok(Object::Number(1.)));
+        assert_eq!(lox.run("7 % 4;"), Ok(Object::Number(3.)));
     }
 }
