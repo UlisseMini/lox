@@ -1,0 +1,60 @@
+// f(z) = z^2 + c
+// with c being the point in the complex plane, and z starting at zero
+
+// constants
+var TERM_WIDTH = 80;
+var TERM_HEIGHT = 30;
+var MAX_ITER = 100;
+
+// (x,y) position in the terminal, x is column y is row.
+var x = 0;
+var y = 0;
+
+while (y < TERM_HEIGHT) {
+  while (x < TERM_WIDTH) {
+    // real and imaginary parts of the complex number c
+    var c_re = (x / TERM_WIDTH) * 3.5 - 2.5;  // scale to (-2.5, 1)
+    var c_im = (y / TERM_HEIGHT) * 2.0 - 1.0; // scale to (-1, 1)
+
+
+    // real and imaginary parts of the complex number z
+    var z_re = 0;
+    var z_im = 0;
+
+    // Temporary variables to avoid clobbering, I can get rid of this
+    // once I add tuples
+    var z_re_new = 0;
+    var z_im_new = 0;
+
+    var iterations = 0;
+    var unbounded = false;
+    while (iterations < MAX_ITER and !unbounded) {
+      z_re_new = z_re*z_re - z_im*z_im + c_re;
+      z_im_new = 2*z_im*z_re + c_im;
+
+      z_re = z_re_new;
+      z_im = z_im_new;
+
+      iterations = iterations + 1;
+
+      // if the magnitude of z is greater then 2, we can prove z^2 + c is unbounded,
+      // so exit early in that case.
+      unbounded = z_re*z_re + z_im*z_im > 4.0;
+    }
+
+    // print the point
+    // TODO: Use number of iterations for "color"
+    if (unbounded) {
+      print ".";
+    } else {
+      print "#";
+    }
+
+    x = x + 1;
+  }
+
+  y = y + 1;
+  x = 0;
+  print "\n";
+}
+
