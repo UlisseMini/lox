@@ -477,6 +477,7 @@ pub enum Statement {
     Print(Expr),
     Block(Vec<Declaration>),
     If(Expr, StatementB, Option<StatementB>),
+    While(Expr, StatementB),
 }
 
 impl fmt::Display for Statement {
@@ -497,6 +498,9 @@ impl fmt::Display for Statement {
                     write!(f, " {}", else_branch)?;
                 }
                 write!(f, ")")
+            }
+            Statement::While(cond, stmt) => {
+                write!(f, "(while {} {}", cond, stmt)
             }
         }
     }
@@ -687,6 +691,12 @@ impl Parser {
                 if self.advance_if(&[ELSE]) { Some(Box::new(self.statement()?)) } else { None };
 
             Ok(Statement::If(cond, if_branch, else_branch))
+        } else if self.advance_if(&[WHILE]) {
+            self.consume(LEFT_PAREN)?;
+            let cond = self.expression()?;
+            self.consume(RIGHT_PAREN)?;
+            let stmt = self.statement()?;
+            Ok(Statement::While(cond, Box::new(stmt)))
         } else {
             let expr = self.expression()?;
             self.consume(SEMICOLON)?;
@@ -835,43 +845,49 @@ impl Interpreter {
     fn interpret(&mut self, ast: AST) -> Result<Object, Error> {
         let mut last = Object::Nil;
         for decl in ast.declarations {
-            last = self.interpret_declaration(decl)?;
+            last = self.interpret_declaration(&decl)?;
         }
         Ok(last)
     }
 
-    fn interpret_declaration(&mut self, decl: Declaration) -> Result<Object, Error> {
+    fn interpret_declaration(&mut self, decl: &Declaration) -> Result<Object, Error> {
         match decl {
             Declaration::Statement(stmt) => self.interpret_statement(stmt),
             Declaration::VarDecl(ident, expr) => {
-                let name = ident.0.lexeme;
+                let name = &ident.0.lexeme.clone();
                 let value = self.eval_expr(expr)?;
-                self.env.define(name, value);
+                self.env.define(name.into(), value);
                 Ok(Object::Nil)
             }
         }
     }
 
-    fn interpret_statement(&mut self, statement: Statement) -> Result<Object, Error> {
+    fn interpret_statement(&mut self, statement: &Statement) -> Result<Object, Error> {
         match statement {
             Statement::Expr(expr) => self.eval_expr(expr),
             Statement::Print(operand) => self.print_statement(operand),
             Statement::Block(block) => self.block_statement(block),
             Statement::If(cond, if_branch, else_branch) => {
                 if self.eval_expr(cond)?.bool()? {
-                    self.interpret_statement(*if_branch)
+                    self.interpret_statement(&if_branch)
                 } else {
                     if let Some(else_branch) = else_branch {
-                        self.interpret_statement(*else_branch)
+                        self.interpret_statement(&else_branch)
                     } else {
                         Ok(Object::Nil)
                     }
                 }
             }
+            Statement::While(cond, stmt) => {
+                while self.eval_expr(cond)?.bool()? {
+                    self.interpret_statement(&stmt)?;
+                }
+                Ok(Object::Nil)
+            }
         }
     }
 
-    fn block_statement(&mut self, statements: Vec<Declaration>) -> Result<Object, Error> {
+    fn block_statement(&mut self, statements: &Vec<Declaration>) -> Result<Object, Error> {
         let mut last = Object::Nil;
 
         self.env.push();
@@ -883,32 +899,32 @@ impl Interpreter {
         Ok(last)
     }
 
-    fn print_statement(&mut self, operand: Expr) -> Result<Object, Error> {
+    fn print_statement(&mut self, operand: &Expr) -> Result<Object, Error> {
         let obj = self.eval_expr(operand)?;
         println!("{}", obj);
 
         Ok(Object::Nil)
     }
 
-    fn eval_expr(&mut self, expr: Expr) -> Result<Object, Error> {
+    fn eval_expr(&mut self, expr: &Expr) -> Result<Object, Error> {
         use Expr::*;
 
         Ok(match expr {
             Literal(l) => l.clone(),
             Unary(u) => self.eval_unary(u)?,
             Binary(b) => self.eval_binary(b)?,
-            Grouping(g) => self.eval_expr(*g)?,
+            Grouping(g) => self.eval_expr(&g)?,
             Identifier(i) => self.eval_identifier(i)?,
             Assign(i, e) => self.eval_assign(i, e)?,
             Logical(l) => self.eval_logical(l)?,
         })
     }
 
-    fn eval_binary(&mut self, b: Binary) -> Result<Object, Error> {
+    fn eval_binary(&mut self, b: &Binary) -> Result<Object, Error> {
         use TokenType::*;
 
-        let left = self.eval_expr(*b.left)?;
-        let right = self.eval_expr(*b.right)?;
+        let left = self.eval_expr(&b.left)?;
+        let right = self.eval_expr(&b.right)?;
 
         let res = match b.operator.type_ {
             PLUS => left.add(right),
@@ -925,13 +941,13 @@ impl Interpreter {
             _ => panic!("invalid binary operator '{}'", b.operator.lexeme),
         };
 
-        self.fix_res(b.operator, res)
+        self.fix_res(&b.operator, res)
     }
 
-    fn eval_unary(&mut self, u: Unary) -> Result<Object, Error> {
+    fn eval_unary(&mut self, u: &Unary) -> Result<Object, Error> {
         use TokenType::*;
 
-        let right = self.eval_expr(*u.right)?;
+        let right = self.eval_expr(&u.right)?;
         let res = match u.operator.type_ {
             MINUS => right.neg(),
             BANG => right.not(),
@@ -939,35 +955,35 @@ impl Interpreter {
             _ => panic!("invalid unary operator '{}'", u.operator.lexeme),
         };
 
-        self.fix_res(u.operator, res)
+        self.fix_res(&u.operator, res)
     }
 
-    fn eval_identifier(&self, ident: Identifier) -> Result<Object, Error> {
+    fn eval_identifier(&self, ident: &Identifier) -> Result<Object, Error> {
         self.getenv(ident)
     }
 
-    fn eval_assign(&mut self, ident: Identifier, expr: ExprB) -> Result<Object, Error> {
-        let value = self.eval_expr(*expr)?;
+    fn eval_assign(&mut self, ident: &Identifier, expr: &Expr) -> Result<Object, Error> {
+        let value = self.eval_expr(&expr)?;
         self.setenv(ident, value)
     }
 
-    fn eval_logical(&mut self, l: Logical) -> Result<Object, Error> {
+    fn eval_logical(&mut self, l: &Logical) -> Result<Object, Error> {
         match l.operator.type_ {
             TokenType::OR => self.eval_or(l),
-            TokenType::AND => self.eval_and(l),
+            TokenType::AND => self.eval_and(&l),
             _ => panic!("invalid logical operator {:?}", l),
         }
     }
 
-    fn eval_or(&mut self, l: Logical) -> Result<Object, Error> {
-        let left = self.eval_expr(*l.left)?;
+    fn eval_or(&mut self, l: &Logical) -> Result<Object, Error> {
+        let left = self.eval_expr(&l.left)?;
 
         match left {
             Object::Bool(b) => {
                 if b {
                     Ok(Object::Bool(true))
                 } else {
-                    self.eval_expr(*l.right)
+                    self.eval_expr(&l.right)
                 }
             }
             _ => Err(Error::new(
@@ -978,13 +994,13 @@ impl Interpreter {
         }
     }
 
-    fn eval_and(&mut self, l: Logical) -> Result<Object, Error> {
-        let left = self.eval_expr(*l.left)?;
+    fn eval_and(&mut self, l: &Logical) -> Result<Object, Error> {
+        let left = self.eval_expr(&l.left)?;
 
         match left {
             Object::Bool(b) => {
                 if b {
-                    self.eval_expr(*l.right)
+                    self.eval_expr(&l.right)
                 } else {
                     Ok(Object::Bool(false))
                 }
@@ -997,8 +1013,8 @@ impl Interpreter {
         }
     }
 
-    fn setenv(&mut self, ident: Identifier, value: Object) -> Result<Object, Error> {
-        let name = ident.0.lexeme;
+    fn setenv(&mut self, ident: &Identifier, value: Object) -> Result<Object, Error> {
+        let name = &ident.0.lexeme;
         if !self.env.set(name.clone(), value.clone()) {
             Err(Error::new(
                 ident.0.line,
@@ -1010,7 +1026,7 @@ impl Interpreter {
         }
     }
 
-    fn getenv(&self, ident: Identifier) -> Result<Object, Error> {
+    fn getenv(&self, ident: &Identifier) -> Result<Object, Error> {
         match self.env.get(&ident.0.lexeme) {
             Some(v) => Ok(v.clone()),
             None => Err(Error::new(
@@ -1021,7 +1037,7 @@ impl Interpreter {
         }
     }
 
-    fn fix_res(&self, op: Token, res: Result<Object, Error>) -> Result<Object, Error> {
+    fn fix_res(&self, op: &Token, res: Result<Object, Error>) -> Result<Object, Error> {
         match res {
             Ok(obj) => Ok(obj),
             Err(mut err) => {
@@ -1196,5 +1212,13 @@ mod tests {
         assert_eq!(lox.run("false and true;"), Ok(Object::Bool(false)));
         assert_eq!(lox.run("false and false;"), Ok(Object::Bool(false)));
         assert_eq!(lox.run("true and true;"), Ok(Object::Bool(true)));
+    }
+
+    #[test]
+    fn test_looping() {
+        let mut lox = Lox::new();
+        assert_eq!(lox.run("var x = 5;"), Ok(Object::Nil));
+        assert_eq!(lox.run("while (x < 10) { x = x + 1; }"), Ok(Object::Nil));
+        assert_eq!(lox.run("x;"), Ok(Object::Number(10.)));
     }
 }
