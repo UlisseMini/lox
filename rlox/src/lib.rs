@@ -52,6 +52,7 @@ pub enum Object {
     Number(f64),
     String(String),
     Bool(bool),
+    Callable(Box<dyn Callable>),
 }
 
 #[rustfmt::skip]
@@ -428,6 +429,36 @@ impl fmt::Display for Logical {
     }
 }
 
+pub struct DisplayVec<'a, T>(&'a Vec<T>)
+where
+    T: fmt::Display;
+
+impl<T: fmt::Display> fmt::Display for DisplayVec<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (k, v) in self.0.iter().enumerate() {
+            if k > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", v);
+        }
+        write!(f, "]")
+    }
+}
+
+#[derive(Debug)]
+pub struct Call {
+    callee: ExprB,
+    paren: Token,
+    args: Vec<Expr>,
+}
+
+impl fmt::Display for Call {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(call {} {})", self.callee, DisplayVec(&self.args))
+    }
+}
+
 #[derive(Debug)]
 pub enum Expr {
     Literal(Object),
@@ -437,6 +468,7 @@ pub enum Expr {
     Identifier(Identifier),
     Assign(Identifier, ExprB),
     Logical(Logical),
+    Call(Call),
 }
 
 impl Expr {
@@ -469,6 +501,11 @@ impl Expr {
             _ => panic!("{:?} is not a logical operator", operator),
         })
     }
+
+    fn call(callee: Expr, paren: Token, args: Vec<Expr>) -> Expr {
+        let callee = Box::new(callee);
+        Expr::Call(Call { callee, paren, args })
+    }
 }
 
 impl fmt::Display for Expr {
@@ -483,6 +520,7 @@ impl fmt::Display for Expr {
             Identifier(ident) => write!(f, "{}", ident),
             Assign(ident, expr) => write!(f, "(set {} {})", ident, expr),
             Logical(l) => write!(f, "({})", l),
+            Call(c) => write!(f, "{}", c),
         }
     }
 }
@@ -777,8 +815,40 @@ impl Parser {
             let right = self.unary()?;
             Ok(Expr::unary(operator, right))
         } else {
-            self.primary()
+            self.call()
         }
+    }
+
+    fn call(&mut self) -> Result<Expr, Error> {
+        use TokenType::*;
+        let mut expr = self.primary()?;
+        loop {
+            if self.advance_if(&[LEFT_PAREN]) {
+                let paren = self.previous();
+                let mut args = Vec::new();
+                if self.advance_if(&[RIGHT_PAREN]) {
+                    expr = Expr::call(expr, self.previous(), args);
+                } else {
+                    args.push(self.expression()?);
+                    while self.advance_if(&[COMMA]) {
+                        args.push(self.expression()?);
+                        if args.len() >= 255 {
+                            return Err(Error::new(
+                                paren.line,
+                                "".to_string(),
+                                "cannot have more then 255 arguments".to_string(),
+                            ));
+                        }
+                    }
+                    self.consume(RIGHT_PAREN)?;
+                    expr = Expr::call(expr, paren, args);
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
     }
 
     fn primary(&mut self) -> Result<Expr, Error> {
@@ -848,6 +918,23 @@ impl Environment {
             }
         }
         return None;
+    }
+}
+
+trait Callable {
+    fn arity(&self) -> i32;
+    fn call(&self, args: Vec<Expr>) -> Result<Object, Error>;
+}
+
+impl fmt::Debug for dyn Callable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<Callable>")
+    }
+}
+
+impl PartialEq for dyn Callable {
+    fn eq(&self, other: &Self) -> bool {
+        false
     }
 }
 
@@ -942,7 +1029,14 @@ impl Interpreter {
             Identifier(i) => self.eval_identifier(i)?,
             Assign(i, e) => self.eval_assign(i, e)?,
             Logical(l) => self.eval_logical(l)?,
+            Call(c) => self.eval_call(c)?,
         })
+    }
+
+    fn eval_call(&mut self, c: &Call) -> Result<Object, Error> {
+        let callee = self.eval_expr(&c.callee)?;
+
+        todo!()
     }
 
     fn eval_binary(&mut self, b: &Binary) -> Result<Object, Error> {
@@ -1125,7 +1219,7 @@ mod tests {
     fn test_parse_expr() {
         fn s(source: &str) -> String {
             let mut lox = Lox::new();
-            let tokens = lox.scan(source).unwrap().clone();
+            let tokens = lox.scan(source).unwrap();
             let ast = lox.parse(tokens).unwrap();
             format!("{}", ast).trim_end().to_string()
         }
@@ -1263,5 +1357,19 @@ mod tests {
 
         let tokens = Scanner::new().scan_tokens("\"foo\\\\nbar\"".into()).unwrap();
         assert_eq!(tokens[0].literal, Object::String("foo\\nbar".into()));
+    }
+
+    #[test]
+    fn test_call() {
+        fn s(source: &str) -> String {
+            let mut lox = Lox::new();
+            let tokens = lox.scan(source).unwrap();
+            let ast = lox.parse(tokens).unwrap();
+            format!("{}", ast).trim_end().to_string()
+        }
+
+        assert_eq!(s("foo();"), "(call foo [])");
+        assert_eq!(s("foo(1, 2);"), "(call foo [1, 2])");
+        assert_eq!(s("foo(1)(2);"), "(call (call foo [1]) [2])");
     }
 }
