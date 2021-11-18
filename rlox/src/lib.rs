@@ -137,7 +137,7 @@ impl fmt::Display for Object {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     type_: TokenType,
     lexeme: String,
@@ -576,6 +576,7 @@ impl fmt::Display for Identifier {
 pub enum Declaration {
     VarDecl(Identifier, Expr),
     Statement(Statement),
+    FunDecl(Identifier, Vec<Identifier>, Vec<Declaration>)
 }
 
 impl fmt::Display for Declaration {
@@ -583,6 +584,7 @@ impl fmt::Display for Declaration {
         match self {
             Declaration::VarDecl(ident, expr) => write!(f, "(var {} {})", ident, expr),
             Declaration::Statement(stmt) => write!(f, "{}", stmt),
+            Declaration::FunDecl(name, params, body) => write!(f, "(fun {} {} {})", name, DisplayVec(params), DisplayVec(body)),
         }
     }
 }
@@ -635,9 +637,10 @@ impl Parser {
         self.tokens[self.current - 1].clone()
     }
 
-    fn advance(&mut self) {
+    fn advance(&mut self) -> Token {
         self.line = self.tokens[self.current].line;
         self.current += 1;
+        self.previous()
     }
 
     fn backup(&mut self) {
@@ -660,11 +663,10 @@ impl Parser {
         return false;
     }
 
-    fn consume(&mut self, type_: TokenType) -> Result<(), Error> {
+    fn consume(&mut self, type_: TokenType) -> Result<Token, Error> {
         let tok = self.current();
         if tok.type_ == type_ {
-            self.advance();
-            Ok(())
+            Ok(self.advance())
         } else {
             Err(Error::new(
                 tok.line,
@@ -708,6 +710,8 @@ impl Parser {
     fn declaration(&mut self) -> Result<Declaration, Error> {
         if self.advance_if(&[TokenType::VAR]) {
             self.parse_var()
+        } else if self.advance_if(&[TokenType::FUN]) {
+            self.parse_fun()
         } else {
             Ok(Declaration::Statement(self.statement()?))
         }
@@ -722,6 +726,38 @@ impl Parser {
         self.consume(SEMICOLON)?;
 
         Ok(Declaration::VarDecl(Identifier(ident), expr))
+    }
+
+    fn identifier(&mut self) -> Result<Identifier, Error> {
+        Ok(Identifier(self.consume(TokenType::IDENTIFIER)?))
+    }
+
+    fn parse_fun(&mut self) -> Result<Declaration, Error> {
+        use TokenType::*;
+
+        let name = self.identifier()?;
+        self.consume(LEFT_PAREN)?;
+        let mut parameters = Vec::new();
+        if self.current().type_ != RIGHT_PAREN {
+            parameters.push(self.identifier()?);
+            while self.advance_if(&[COMMA]) {
+                parameters.push(self.identifier()?);
+                if parameters.len() >= 255 {
+                    todo!();
+                }
+            }
+        }
+
+        self.consume(RIGHT_PAREN)?;
+
+        self.consume(LEFT_BRACE)?;
+        let mut body = Vec::new();
+        while !self.advance_if(&[RIGHT_BRACE]) && !self.at_end() {
+            body.push(self.declaration()?);
+        }
+
+
+        Ok(Declaration::FunDecl(name, parameters, body))
     }
 
     fn statement(&mut self) -> Result<Statement, Error> {
@@ -817,11 +853,11 @@ impl Parser {
             let right = self.unary()?;
             Ok(Expr::unary(operator, right))
         } else {
-            self.call()
+            self.parse_call()
         }
     }
 
-    fn call(&mut self) -> Result<Expr, Error> {
+    fn parse_call(&mut self) -> Result<Expr, Error> {
         use TokenType::*;
         let mut expr = self.primary()?;
         loop {
@@ -874,6 +910,7 @@ impl Parser {
             ))
         }
     }
+
 }
 
 use std::collections::HashMap;
@@ -980,6 +1017,7 @@ impl Interpreter {
                 self.env.define(name.into(), value);
                 Ok(Object::Nil)
             }
+            Declaration::FunDecl(name, params, body) => todo!(),
         }
     }
 
@@ -1053,7 +1091,7 @@ impl Interpreter {
         let callee = self.eval_expr(&c.callee)?;
         if let Object::Callable(f) = callee {
             if f.arity() != c.args.len() {
-                Err(Error::new(c.paren.line, "".to_string(), format!("want {} parameters got {}", f.arity(), c.args.len())))
+                Err(Error::new(c.paren.line, "".to_string(), format!("want {} arguments got {}", f.arity(), c.args.len())))
             } else {
                 let mut args = Vec::with_capacity(c.args.len());
                 for arg in &c.args {
@@ -1389,7 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_call() {
+    fn test_parse_functions() {
         fn s(source: &str) -> String {
             let mut lox = Lox::new();
             let tokens = lox.scan(source).unwrap();
@@ -1400,6 +1438,8 @@ mod tests {
         assert_eq!(s("foo();"), "(call foo [])");
         assert_eq!(s("foo(1, 2);"), "(call foo [1, 2])");
         assert_eq!(s("foo(1)(2);"), "(call (call foo [1]) [2])");
+        assert_eq!(s("fun foo() {}"), "(fun foo [] [])");
+        assert_eq!(s("fun foo(x, y) { print x + y; }"), "(fun foo [x, y] [(print (+ x y))])");
     }
 
 }
