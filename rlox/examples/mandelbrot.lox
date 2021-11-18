@@ -10,6 +10,9 @@ var MAX_ITER = 100;
 var x = 0;
 var y = 0;
 
+// starting time
+var start = clock();
+
 while (y < TERM_HEIGHT) {
   while (x < TERM_WIDTH) {
     // real and imaginary parts of the complex number c
@@ -58,3 +61,6 @@ while (y < TERM_HEIGHT) {
   print "\n";
 }
 
+var end = clock();
+var took = end - start;
+print "took "; print took; print " ms\n";

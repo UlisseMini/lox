@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 #[allow(non_camel_case_types)]
 #[rustfmt::skip]
@@ -52,7 +53,7 @@ pub enum Object {
     Number(f64),
     String(String),
     Bool(bool),
-    Callable(Box<dyn Callable>),
+    Callable(Rc<Box<dyn Callable>>),
 }
 
 #[rustfmt::skip]
@@ -131,6 +132,7 @@ impl fmt::Display for Object {
             Number(n) => write!(f, "{}", n),
             String(s) => write!(f, "\"{}\"", s),
             Bool(b) => write!(f, "{}", b),
+            Callable(_) => todo!(),
         }
     }
 }
@@ -440,7 +442,7 @@ impl<T: fmt::Display> fmt::Display for DisplayVec<'_, T> {
             if k > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", v);
+            write!(f, "{}", v)?;
         }
         write!(f, "]")
     }
@@ -921,9 +923,9 @@ impl Environment {
     }
 }
 
-trait Callable {
-    fn arity(&self) -> i32;
-    fn call(&self, args: Vec<Expr>) -> Result<Object, Error>;
+pub trait Callable {
+    fn arity(&self) -> usize;
+    fn call(&self, args: Vec<Object>) -> Result<Object, Error>;
 }
 
 impl fmt::Debug for dyn Callable {
@@ -933,8 +935,20 @@ impl fmt::Debug for dyn Callable {
 }
 
 impl PartialEq for dyn Callable {
-    fn eq(&self, other: &Self) -> bool {
+    fn eq(&self, _other: &Self) -> bool {
         false
+    }
+}
+
+struct Clock();
+impl Callable for Clock {
+    fn arity(&self) -> usize { 0 }
+    fn call(&self, _args: Vec<Object>) -> Result<Object, Error> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let start = SystemTime::now();
+        let since_epoch = start.duration_since(UNIX_EPOCH).unwrap();
+        let ms = since_epoch.as_millis();
+        Ok(Object::Number(ms as f64))
     }
 }
 
@@ -944,7 +958,9 @@ struct Interpreter {
 
 impl Interpreter {
     fn new() -> Interpreter {
-        Interpreter { env: Box::new(Environment::new()) }
+        let mut env = Box::new(Environment::new());
+        env.define("clock".to_string(), Object::Callable(Rc::new(Box::new(Clock()))));
+        Interpreter { env }
     }
 
     fn interpret(&mut self, ast: AST) -> Result<Object, Error> {
@@ -1035,8 +1051,20 @@ impl Interpreter {
 
     fn eval_call(&mut self, c: &Call) -> Result<Object, Error> {
         let callee = self.eval_expr(&c.callee)?;
+        if let Object::Callable(f) = callee {
+            if f.arity() != c.args.len() {
+                Err(Error::new(c.paren.line, "".to_string(), format!("want {} parameters got {}", f.arity(), c.args.len())))
+            } else {
+                let mut args = Vec::with_capacity(c.args.len());
+                for arg in &c.args {
+                    args.push(self.eval_expr(arg)?);
+                }
 
-        todo!()
+                f.call(args)
+            }
+        } else {
+            Err(Error::new(c.paren.line, "".to_string(), format!("want Callable got {:?}", callee)))
+        }
     }
 
     fn eval_binary(&mut self, b: &Binary) -> Result<Object, Error> {
@@ -1270,6 +1298,7 @@ mod tests {
         assert_eq!(r("var x; x;"), Object::Nil);
         assert_eq!(r("var x = 5; x = 2; x;"), Object::Number(2.));
         assert_eq!(r("var x = 5; var y; x = y = 2; y+x;"), Object::Number(4.));
+        r("clock();");
     }
 
     #[test]
@@ -1360,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_call() {
+    fn test_parse_call() {
         fn s(source: &str) -> String {
             let mut lox = Lox::new();
             let tokens = lox.scan(source).unwrap();
@@ -1372,4 +1401,5 @@ mod tests {
         assert_eq!(s("foo(1, 2);"), "(call foo [1, 2])");
         assert_eq!(s("foo(1)(2);"), "(call (call foo [1]) [2])");
     }
+
 }
