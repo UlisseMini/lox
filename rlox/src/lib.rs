@@ -973,13 +973,15 @@ impl fmt::Debug for dyn Callable {
 
 impl PartialEq for dyn Callable {
     fn eq(&self, _other: &Self) -> bool {
-        false
+        unreachable!()
     }
 }
 
 struct Clock();
 impl Callable for Clock {
-    fn arity(&self) -> usize { 0 }
+    fn arity(&self) -> usize {
+        0
+    }
     fn call(&self, _args: Vec<Object>) -> Result<Object, Error> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let start = SystemTime::now();
